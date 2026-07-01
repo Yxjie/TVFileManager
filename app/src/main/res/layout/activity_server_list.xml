@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1A1A2E"
+    android:orientation="vertical">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:background="#16213E"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="24dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="📂 我的服务器"
+            android:textColor="#FFFFFF"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnAddServer"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="+ 添加服务器"
+            android:textSize="14sp"
+            android:backgroundTint="#6495ED"
+            android:textColor="@android:color/white"
+            android:focusable="true" />
+    </LinearLayout>
+
+    <!-- Server List -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:padding="16dp"
+        android:clipToPadding="false" />
+
+    <!-- Empty State -->
+    <TextView
+        android:id="@+id/tvEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="还没有保存的服务器\n\n点击上方「+ 添加服务器」开始"
+        android:textColor="#80FFFFFF"
+        android:textSize="18sp"
+        android:lineSpacingExtra="8dp"
+        android:visibility="gone" />
+
+    <!-- Footer -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="#16213E"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="24dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="点击卡片连接  |  ✏️编辑  |  🗑️删除"
+            android:textColor="#60FFFFFF"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvCacheSize"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="缓存: 0 B"
+            android:textColor="#80FFFFFF"
+            android:textSize="12sp"
+            android:layout_marginEnd="12dp" />
+
+        <Button
+            android:id="@+id/btnClearCache"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="清除缓存"
+            android:textSize="13sp"
+            android:backgroundTint="#FF5722"
+            android:textColor="@android:color/white"
+            android:focusable="true"
+            android:paddingHorizontal="16dp" />
+    </LinearLayout>
+
+</LinearLayout>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#FF1976D2</color>
+    <color name="primary_dark">#FF0D47A1</color>
+    <color name="accent">#FF00BCD4</color>
+    <color name="background">#FF1A1A2E</color>
+    <color name="surface">#FF16213E</color>
+    <color name="on_surface">#FFE0E0E0</color>
+    <color name="on_surface_dim">#FF9E9E9E</color>
+    <color name="folder_color">#FFFFCA28</color>
+    <color name="file_color">#FF90CAF9</color>
+    <color name="apk_color">#FF66BB6A</color>
+    <color name="media_color">#FFEF5350</color>
+    <color name="selected_bg">#3300BCD4</color>
+    <color name="focused_bg">#44FFFFFF</color>
+    <color name="error_color">#FFFF5252</color>
+    <color name="success_color">#FF4CAF50</color>
+</resources>

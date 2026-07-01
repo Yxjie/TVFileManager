@@ -1,0 +1,6 @@
+-keep class com.hierynomus.** { *; }
+-keep class net.engio.** { *; }
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.slf4j.**
+-dontwarn java.beans.**
+-dontwarn javax.**

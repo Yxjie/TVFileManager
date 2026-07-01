@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/item_bg"
+    android:focusable="true"
+    android:focusableInTouchMode="false"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:layout_margin="4dp"
+    android:stateListAnimator="@animator/item_scale">
+
+    <!-- Icon -->
+    <ImageView
+        android:id="@+id/ivIcon"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:scaleType="centerInside" />
+
+    <!-- File Name -->
+    <TextView
+        android:id="@+id/tvName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:ellipsize="middle"
+        android:gravity="center"
+        android:maxLines="2"
+        android:textColor="@color/on_surface"
+        android:textSize="13sp" />
+
+    <!-- Meta Info -->
+    <TextView
+        android:id="@+id/tvMeta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:textColor="@color/on_surface_dim"
+        android:textSize="11sp" />
+
+    <!-- Badge -->
+    <TextView
+        android:id="@+id/tvBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/badge_bg"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="1dp"
+        android:textColor="@color/on_surface"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+</LinearLayout>
