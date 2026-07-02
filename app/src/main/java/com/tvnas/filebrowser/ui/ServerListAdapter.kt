@@ -5,6 +5,7 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ItemServerBinding
 import com.tvnas.filebrowser.smb.ServerConfig
 
@@ -33,7 +34,7 @@ class ServerListAdapter(
         fun bind(server: ServerConfig) {
             binding.tvName.text = server.getDisplayName()
             binding.tvAddress.text = server.getFullAddress()
-            binding.tvUsername.text = "用户: ${server.username}"
+            binding.tvUsername.text = binding.root.context.getString(R.string.user_label, server.username)
             
             binding.root.setOnClickListener {
                 onItemClick(server)

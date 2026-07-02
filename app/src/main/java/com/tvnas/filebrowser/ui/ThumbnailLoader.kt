@@ -6,16 +6,18 @@ import android.graphics.BitmapFactory
 import android.util.LruCache
 import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbFile
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 
 /**
  * SMB 图片缩略图加载器
  * - 内存缓存 (LruCache) + 磁盘缓存
  * - 通过 SMB 下载原图到磁盘缓存，再解码为小缩略图
- * - Mutex 保证 SMB 并发安全
+ * - Semaphore 允许多个并发下载（最多 3 个）
+ * - MD5 哈希避免缓存文件名碰撞
  */
 class ThumbnailLoader(
     private val context: Context,
@@ -23,7 +25,7 @@ class ThumbnailLoader(
 ) {
     private val memoryCache = LruCache<String, Bitmap>(60)
     private val diskCacheDir = File(context.cacheDir, "thumbnails").apply { mkdirs() }
-    private val mutex = Mutex()
+    private val semaphore = Semaphore(3)  // 允许最多 3 个并发下载
     private val maxThumbnailSize = 128 // pixels
 
     /**
@@ -36,7 +38,7 @@ class ThumbnailLoader(
         // 1. 内存缓存
         memoryCache.get(key)?.let { return it }
 
-        // 2. 磁盘缓存
+        // 2. 磁盘缓存（不阻塞 semaphore）
         val cacheFile = getCacheFile(file)
         if (cacheFile.exists() && cacheFile.length() > 0) {
             val bitmap = decodeThumbnail(cacheFile)
@@ -44,16 +46,16 @@ class ThumbnailLoader(
             return bitmap
         }
 
-        // 3. 下载并缓存（加锁保证串行）
-        return mutex.withLock {
-            try {
-                // 双重检查
-                if (cacheFile.exists() && cacheFile.length() > 0) {
-                    val bitmap = decodeThumbnail(cacheFile)
-                    bitmap?.let { memoryCache.put(key, it) }
-                    return@withLock bitmap
-                }
+        // 3. 下载并缓存（Semaphore 限制并发数为 3）
+        return semaphore.withPermit {
+            // 双重检查：可能在等待 semaphore 时已被其他协程缓存
+            if (cacheFile.exists() && cacheFile.length() > 0) {
+                val bitmap = decodeThumbnail(cacheFile)
+                bitmap?.let { memoryCache.put(key, it) }
+                return@withPermit bitmap
+            }
 
+            try {
                 // 下载到临时文件，完成后重命名（防止写入中断导致损坏）
                 val tempFile = File(cacheFile.parent, "${cacheFile.name}.tmp")
                 FileOutputStream(tempFile).use { out ->
@@ -65,8 +67,9 @@ class ThumbnailLoader(
                 bitmap?.let { memoryCache.put(key, it) }
                 bitmap
             } catch (e: Exception) {
-                // 下载失败，清理
-                try { getCacheFile(file).delete() } catch (_: Exception) {}
+                // 下载失败，清理临时文件和可能损坏的缓存
+                runCatching { File(cacheFile.parent, "${cacheFile.name}.tmp").delete() }
+                runCatching { cacheFile.delete() }
                 null
             }
         }
@@ -79,10 +82,22 @@ class ThumbnailLoader(
         memoryCache.evictAll()
     }
 
+    /**
+     * 清空磁盘缓存
+     */
+    fun clearDiskCache() {
+        diskCacheDir.listFiles()?.forEach { it.delete() }
+    }
+
+    /**
+     * 使用 MD5 哈希生成缓存文件名，避免碰撞
+     */
     private fun getCacheFile(file: SmbFile): File {
-        val hash = file.path.hashCode().toString()
+        val md5 = MessageDigest.getInstance("MD5")
+            .digest(file.path.toByteArray())
+            .joinToString("") { "%02x".format(it) }
         val ext = file.getExtension()
-        return File(diskCacheDir, "${hash}.${ext}")
+        return File(diskCacheDir, "$md5.$ext")
     }
 
     private fun decodeThumbnail(file: File): Bitmap? {

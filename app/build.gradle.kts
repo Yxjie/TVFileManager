@@ -34,14 +34,14 @@ android {
 }
 
 dependencies {
-    // AndroidX & Leanback
+    // AndroidX
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("androidx.leanback:leanback:1.0.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-process:2.8.4")
     implementation("androidx.fragment:fragment-ktx:1.8.2")
 
     // Material Design
@@ -58,7 +58,7 @@ dependencies {
 
     // Glide for icons
     implementation("com.github.bumptech.glide:glide:4.16.0")
-    
+
     // Gson for JSON
     implementation("com.google.code.gson:gson:2.10.1")
 }
