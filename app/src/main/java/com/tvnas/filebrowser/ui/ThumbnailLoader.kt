@@ -2,6 +2,7 @@ package com.tvnas.filebrowser.ui
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Bitmap.CompressFormat
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import com.tvnas.filebrowser.smb.SmbConnectionManager
@@ -56,14 +57,23 @@ class ThumbnailLoader(
             }
 
             try {
-                // 下载到临时文件，完成后重命名（防止写入中断导致损坏）
+                // 下载原图到临时文件
                 val tempFile = File(cacheFile.parent, "${cacheFile.name}.tmp")
                 FileOutputStream(tempFile).use { out ->
                     smbManager.downloadFile(file.path, out)
                 }
-                tempFile.renameTo(cacheFile)
 
-                val bitmap = decodeThumbnail(cacheFile)
+                // 从原图解码出缩略图
+                val bitmap = decodeThumbnail(tempFile)
+
+                // 将缩略图压缩为 JPEG 写入缓存（~5-15KB/张），删除原图
+                if (bitmap != null) {
+                    FileOutputStream(cacheFile).use { out ->
+                        bitmap.compress(CompressFormat.JPEG, 80, out)
+                    }
+                }
+                tempFile.delete()
+
                 bitmap?.let { memoryCache.put(key, it) }
                 bitmap
             } catch (e: Exception) {

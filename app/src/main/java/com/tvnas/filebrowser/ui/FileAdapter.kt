@@ -11,8 +11,10 @@ import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ItemFileBinding
 import com.tvnas.filebrowser.smb.SmbFile
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -45,20 +47,22 @@ class FileAdapter(
             val iconRes = getFileIconRes(file)
 
             if (file.isDecodableImage() && thumbnailLoader != null) {
-                loadJob = lifecycleScope.launch {
+                loadJob = lifecycleScope.launch(Dispatchers.IO) {
                     val bitmap = thumbnailLoader.loadThumbnail(file)
-                    if (bitmap != null && bindingAdapterPosition != RecyclerView.NO_POSITION) {
-                        val currentFile = getItemOrNull(bindingAdapterPosition)
-                        if (currentFile?.path == file.path) {
+                    withContext(Dispatchers.Main) {
+                        if (bitmap != null && bindingAdapterPosition != RecyclerView.NO_POSITION) {
+                            val currentFile = getItemOrNull(bindingAdapterPosition)
+                            if (currentFile?.path == file.path) {
+                                Glide.with(binding.root.context)
+                                    .load(bitmap)
+                                    .placeholder(iconRes)
+                                    .into(binding.ivIcon)
+                            }
+                        } else {
                             Glide.with(binding.root.context)
-                                .load(bitmap)
-                                .placeholder(iconRes)
+                                .load(iconRes)
                                 .into(binding.ivIcon)
                         }
-                    } else {
-                        Glide.with(binding.root.context)
-                            .load(iconRes)
-                            .into(binding.ivIcon)
                     }
                 }
             } else {

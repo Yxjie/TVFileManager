@@ -119,7 +119,8 @@ class ImageViewerActivity : AppCompatActivity() {
             try {
                 val bitmap = withContext(Dispatchers.IO) {
                     // 下载到临时文件（而非内存）
-                    val tempFile = File.createTempFile("img_viewer_", ".tmp", cacheDir)
+                    val ext = file.getExtension()
+                    val tempFile = File.createTempFile("img_viewer_", ".$ext", cacheDir)
                     tempImageFile = tempFile
                     FileOutputStream(tempFile).use { out ->
                         smbManager.downloadFile(file.path, out)
