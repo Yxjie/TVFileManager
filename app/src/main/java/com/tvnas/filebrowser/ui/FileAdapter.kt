@@ -7,6 +7,7 @@ import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
+import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ItemFileBinding
 import com.tvnas.filebrowser.smb.SmbFile
@@ -55,6 +56,8 @@ class FileAdapter(
                             if (currentFile?.path == file.path) {
                                 Glide.with(binding.root.context)
                                     .load(bitmap)
+                                    .skipMemoryCache(true)
+                                    .diskCacheStrategy(DiskCacheStrategy.NONE)
                                     .placeholder(iconRes)
                                     .into(binding.ivIcon)
                             }
