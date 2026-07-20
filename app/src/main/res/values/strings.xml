@@ -82,4 +82,17 @@
     <string name="folder_meta">文件夹</string>
     <string name="share_name_label">共享名称</string>
     <string name="domain_label">域名</string>
+
+    <string name="install_permission_title">需要安装权限</string>
+    <string name="install_permission_message">请先在系统设置中允许本应用安装未知来源应用，然后再试。</string>
+    <string name="go_settings">去设置</string>
+
+    <!-- Video Player -->
+    <string name="video_player_hint">OK 播放/暂停    ← → 切换视频    BACK 返回</string>
+    <string name="video_index">%1$d / %2$d</string>
+    <string name="video_not_found">没有视频文件</string>
+    <string name="video_playback_error">播放出错: %s</string>
+    <string name="video_connection_lost">连接中断，请检查网络</string>
+    <string name="last_video">已经是最后一个视频</string>
+    <string name="first_video">已经是第一个视频</string>
 </resources>

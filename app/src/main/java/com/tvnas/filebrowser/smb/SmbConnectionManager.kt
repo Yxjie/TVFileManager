@@ -180,6 +180,28 @@ class SmbConnectionManager {
     }
 
     /**
+     * 打开文件用于流式读取（用于 ExoPlayer 等媒体播放器）
+     *
+     * 返回 SmbStreamHandle，调用者负责在使用完毕后调用 handle.close() 释放资源。
+     * 每个 handle 持有独立的文件句柄，可并发使用多个 handle。
+     */
+    @Throws(Exception::class)
+    fun openFileForStreaming(remotePath: String): SmbStreamHandle {
+        val smbFile = synchronized(this) {
+            ensureShare().openFile(
+                remotePath,
+                EnumSet.of(AccessMask.GENERIC_READ),
+                null,
+                EnumSet.of(SMB2ShareAccess.FILE_SHARE_READ),
+                SMB2CreateDisposition.FILE_OPEN,
+                null
+            )
+        }
+        val fileSize = smbFile.fileInformation.standardInformation.endOfFile
+        return SmbStreamHandle(smbFile, fileSize)
+    }
+
+    /**
      * 断开连接并释放所有资源
      * 安全调用：多次调用不会抛异常
      */
@@ -275,6 +297,8 @@ data class SmbFile(
 
     fun isMedia(): Boolean = getExtension() in MEDIA_EXTENSIONS
 
+    fun isVideo(): Boolean = getExtension() in VIDEO_EXTENSIONS
+
     fun formatSize(): String {
         if (isDirectory) return "文件夹"
 
@@ -318,6 +342,8 @@ data class SmbFile(
             "3fr",                      // Hasselblad
         )
 
-        private val MEDIA_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov", "mp3", "flac", "wav")
+        val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov")
+        val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav")
+        private val MEDIA_EXTENSIONS = VIDEO_EXTENSIONS + AUDIO_EXTENSIONS
     }
 }

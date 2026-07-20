@@ -1,6 +1,8 @@
 package com.tvnas.filebrowser.ui
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
@@ -30,6 +32,10 @@ import java.util.*
  */
 class BrowserActivity : AppCompatActivity() {
 
+    companion object {
+        private const val REQUEST_INSTALL_PERMISSION = 1001
+    }
+
     private lateinit var binding: ActivityBrowserBinding
     private lateinit var adapter: FileAdapter
     private lateinit var serverStorage: ServerStorage
@@ -37,6 +43,9 @@ class BrowserActivity : AppCompatActivity() {
 
     // 使用全局共享的连接管理器，跨 Activity 复用连接
     private val smbManager = SmbConnectionManager.shared
+
+    // 从设置页返回后需要安装的 APK 文件
+    private var pendingInstallFile: SmbFile? = null
 
     private var serverId: String? = null
     private var server: String = ""
@@ -161,6 +170,7 @@ class BrowserActivity : AppCompatActivity() {
             }
             file.isApk() -> showApkInstallDialog(file)
             file.isDecodableImage() -> openImageViewer(file)
+            file.isVideo() -> openVideoPlayer(file)
             file.isImage() -> showToast(getString(R.string.unsupported_image_format, file.getExtension().uppercase()))
             else -> showToast(getString(R.string.unsupported_file_type))
         }
@@ -188,6 +198,24 @@ class BrowserActivity : AppCompatActivity() {
     }
 
     private fun showApkInstallDialog(file: SmbFile) {
+        // Android O+ 需要先检查是否有安装未知来源应用的权限
+        if (!ApkInstaller.canInstallUnknownApps(this)) {
+            pendingInstallFile = file
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.install_permission_title))
+                .setMessage(getString(R.string.install_permission_message))
+                .setPositiveButton(getString(R.string.go_settings)) { _, _ ->
+                    val intent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                    intent.data = Uri.parse("package:${packageName}")
+                    startActivityForResult(intent, REQUEST_INSTALL_PERMISSION)
+                }
+                .setNegativeButton(getString(R.string.cancel)) { _, _ ->
+                    pendingInstallFile = null
+                }
+                .show()
+            return
+        }
+
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.install_app_title))
             .setMessage(getString(R.string.install_app_message, file.name, file.formatSize()))
@@ -196,6 +224,18 @@ class BrowserActivity : AppCompatActivity() {
             }
             .setNegativeButton(getString(R.string.cancel), null)
             .show()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_INSTALL_PERMISSION) {
+            val file = pendingInstallFile
+            pendingInstallFile = null
+            if (file != null && ApkInstaller.canInstallUnknownApps(this)) {
+                // 用户已授权，继续弹出安装确认对话框
+                showApkInstallDialog(file)
+            }
+        }
     }
 
     private fun downloadAndInstallApk(file: SmbFile) {
@@ -258,6 +298,27 @@ class BrowserActivity : AppCompatActivity() {
             putExtra("serverId", serverId)
             putExtra("currentIndex", currentIndex)
             putStringArrayListExtra("imageFiles", imageListJson)
+        }
+        startActivity(intent)
+    }
+
+    /**
+     * 打开视频播放器（流式播放，与 ImageViewer 传参方式一致）
+     */
+    private fun openVideoPlayer(file: SmbFile) {
+        val videoFiles = adapter.currentList.filter { it.isVideo() }
+        val currentIndex = videoFiles.indexOfFirst { it.path == file.path }
+
+        if (currentIndex == -1) return
+
+        val videoListJson = ArrayList(videoFiles.map {
+            "${it.name}|${it.path}|${it.size}|${it.lastModified}"
+        })
+
+        val intent = Intent(this, VideoPlayerActivity::class.java).apply {
+            putExtra("serverId", serverId)
+            putExtra("currentIndex", currentIndex)
+            putStringArrayListExtra("videoFiles", videoListJson)
         }
         startActivity(intent)
     }

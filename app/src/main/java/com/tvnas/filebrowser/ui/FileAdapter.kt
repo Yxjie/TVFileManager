@@ -107,8 +107,8 @@ class FileAdapter(
                 file.isDirectory -> R.drawable.ic_folder
                 file.isApk() -> R.drawable.ic_apk
                 file.isImage() -> R.drawable.ic_image
-                file.getExtension() in VIDEO_EXTENSIONS -> R.drawable.ic_video
-                file.getExtension() in AUDIO_EXTENSIONS -> R.drawable.ic_music
+                file.getExtension() in SmbFile.VIDEO_EXTENSIONS -> R.drawable.ic_video
+                file.getExtension() in SmbFile.AUDIO_EXTENSIONS -> R.drawable.ic_music
                 file.getExtension() == "pdf" -> R.drawable.ic_pdf
                 file.getExtension() in DOC_EXTENSIONS -> R.drawable.ic_document
                 file.getExtension() in ARCHIVE_EXTENSIONS -> R.drawable.ic_archive
@@ -133,8 +133,6 @@ class FileAdapter(
     }
 
     companion object {
-        private val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov")
-        private val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav")
         private val DOC_EXTENSIONS = setOf("doc", "docx", "txt")
         private val ARCHIVE_EXTENSIONS = setOf("zip", "rar", "7z")
         private val CODE_EXTENSIONS = setOf("exe", "bat", "sh")
