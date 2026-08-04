@@ -16,6 +16,8 @@ import com.tvnas.filebrowser.databinding.ActivityImageViewerBinding
 import com.tvnas.filebrowser.smb.ServerStorage
 import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbFile
+import com.tencent.bugly.crashreport.BuglyLog
+import com.tencent.bugly.crashreport.CrashReport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -151,9 +153,14 @@ class ImageViewerActivity : AppCompatActivity() {
                 if (bitmap != null) {
                     binding.imageView.setImageBitmap(bitmap)
                 } else {
+                    // 上报图片解码失败到 Bugly
+                    BuglyLog.e("ImageViewer", "图片解码返回 null: ${file.name}, 格式: ${file.getExtension()}, 大小: ${file.formatSize()}")
                     showToast(getString(R.string.image_load_failed))
                 }
             } catch (e: Exception) {
+                // 上报图片加载错误到 Bugly
+                BuglyLog.e("ImageViewer", "图片加载失败: ${file.name}, 格式: ${file.getExtension()}, 大小: ${file.formatSize()}")
+                CrashReport.postCatchedException(e)
                 showToast(getString(R.string.load_failed, e.message ?: ""))
             } finally {
                 // 清理临时文件

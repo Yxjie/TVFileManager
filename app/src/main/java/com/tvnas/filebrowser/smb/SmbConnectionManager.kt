@@ -10,6 +10,8 @@ import com.hierynomus.smbj.auth.AuthenticationContext
 import com.hierynomus.smbj.connection.Connection
 import com.hierynomus.smbj.session.Session
 import com.hierynomus.smbj.share.DiskShare
+import com.tencent.bugly.crashreport.BuglyLog
+import com.tencent.bugly.crashreport.CrashReport
 import java.io.OutputStream
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
@@ -75,6 +77,9 @@ class SmbConnectionManager {
             }
         } catch (e: Exception) {
             runCatching { client.close() }
+            // 上报 SMB 连接失败到 Bugly（不含密码）
+            BuglyLog.e("SmbConnection", "连接失败: host=$host, port=$port, share=$shareName, user=${username ?: "guest"}, error=${e.message}")
+            CrashReport.postCatchedException(e)
             throw e
         }
     }
@@ -342,7 +347,19 @@ data class SmbFile(
             "3fr",                      // Hasselblad
         )
 
-        val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov")
+        val VIDEO_EXTENSIONS = setOf(
+            "mp4", "m4v",          // MP4
+            "mkv",                 // Matroska
+            "avi",                 // AVI
+            "mov",                 // QuickTime
+            "wmv",                 // Windows Media
+            "flv",                 // Flash Video
+            "webm",                // WebM
+            "mpg", "mpeg",         // MPEG
+            "ts",                  // MPEG-TS
+            "3gp",                 // 3GPP
+            "vob"                  // DVD Video
+        )
         val AUDIO_EXTENSIONS = setOf("mp3", "flac", "wav")
         private val MEDIA_EXTENSIONS = VIDEO_EXTENSIONS + AUDIO_EXTENSIONS
     }

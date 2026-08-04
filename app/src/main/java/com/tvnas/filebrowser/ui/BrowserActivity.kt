@@ -18,6 +18,8 @@ import com.tvnas.filebrowser.install.ApkInstaller
 import com.tvnas.filebrowser.smb.ServerStorage
 import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbFile
+import com.tencent.bugly.crashreport.BuglyLog
+import com.tencent.bugly.crashreport.CrashReport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -126,6 +128,8 @@ class BrowserActivity : AppCompatActivity() {
                 loadFiles(currentPath)
             } catch (e: Exception) {
                 binding.progressBar.visibility = View.GONE
+                BuglyLog.e("Browser", "连接并加载文件失败: server=$server:$port, share=$share, path=$currentPath, error=${e.message}")
+                CrashReport.postCatchedException(e)
                 showToast(getString(R.string.connect_failed_detail, e.message ?: ""))
                 finish()
             }
@@ -155,6 +159,8 @@ class BrowserActivity : AppCompatActivity() {
                 updatePathDisplay()
                 binding.tvItemCount.text = getString(R.string.items_count, files.size)
             } catch (e: Exception) {
+                BuglyLog.e("Browser", "加载文件列表失败: server=$server:$port, share=$share, path=$path, error=${e.message}")
+                CrashReport.postCatchedException(e)
                 showToast(getString(R.string.load_failed, e.message ?: ""))
             } finally {
                 binding.progressBar.visibility = View.GONE
@@ -278,6 +284,8 @@ class BrowserActivity : AppCompatActivity() {
 
             } catch (e: Exception) {
                 hideDownloadProgress()
+                BuglyLog.e("Browser", "APK 下载失败: ${file.name}, 大小: ${file.formatSize()}, 路径: ${file.path}, error=${e.message}")
+                CrashReport.postCatchedException(e)
                 showToast(getString(R.string.download_failed_detail, e.message ?: ""))
             }
         }

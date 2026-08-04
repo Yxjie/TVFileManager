@@ -7,6 +7,8 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbStreamHandle
+import com.tencent.bugly.crashreport.BuglyLog
+import com.tencent.bugly.crashreport.CrashReport
 import java.io.IOException
 
 /**
@@ -45,6 +47,8 @@ class SmbDataSource : BaseDataSource(true) {
             // 通过共享连接打开独立的文件句柄
             streamHandle = SmbConnectionManager.shared.openFileForStreaming(remotePath)
         } catch (e: Exception) {
+            BuglyLog.e("SmbDataSource", "无法打开 SMB 文件: $remotePath, error=${e.message}")
+            CrashReport.postCatchedException(e)
             throw IOException("无法打开 SMB 文件: ${e.message}", e)
         }
 
@@ -74,8 +78,12 @@ class SmbDataSource : BaseDataSource(true) {
         val bytesRead = try {
             handle.read(buffer, currentOffset, offset, bytesToRead)
         } catch (e: com.hierynomus.mssmb2.SMBApiException) {
+            BuglyLog.e("SmbDataSource", "SMB 连接中断: offset=$currentOffset, bytesToRead=$bytesToRead, error=${e.message}")
+            CrashReport.postCatchedException(e)
             throw IOException("连接中断，请检查网络", e)
         } catch (e: Exception) {
+            BuglyLog.e("SmbDataSource", "SMB 读取失败: offset=$currentOffset, bytesToRead=$bytesToRead, error=${e.message}")
+            CrashReport.postCatchedException(e)
             throw IOException("SMB 读取失败: ${e.message}", e)
         }
 

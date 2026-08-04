@@ -22,6 +22,8 @@ import com.tvnas.filebrowser.media.MimeTypeUtil
 import com.tvnas.filebrowser.media.SmbDataSourceFactory
 import com.tvnas.filebrowser.smb.ServerStorage
 import com.tvnas.filebrowser.smb.SmbFile
+import com.tencent.bugly.crashreport.BuglyLog
+import com.tencent.bugly.crashreport.CrashReport
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -168,6 +170,12 @@ class VideoPlayerActivity : AppCompatActivity() {
 
                 override fun onPlayerError(error: PlaybackException) {
                     binding.progressBar.visibility = View.GONE
+
+                    // 上报视频播放错误到 Bugly
+                    val currentFile = videoFiles.getOrNull(currentIndex)
+                    BuglyLog.e("VideoPlayer", "播放失败: ${currentFile?.name ?: "未知"}, 格式: ${currentFile?.getExtension() ?: "未知"}, 路径: smb://$server/$share/${currentFile?.path ?: "未知"}")
+                    CrashReport.postCatchedException(error)
+
                     showError(getString(R.string.video_playback_error, error.message ?: "未知错误"))
                 }
             })

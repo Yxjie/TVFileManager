@@ -5,6 +5,10 @@
 -dontwarn java.beans.**
 -dontwarn javax.**
 
+# Bugly
+-keep class com.tencent.bugly.** { *; }
+-dontwarn com.tencent.bugly.**
+
 # ExoPlayer / androidx.media3
 -keep class androidx.media3.** { *; }
 -dontwarn androidx.media3.**
