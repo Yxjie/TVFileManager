@@ -18,6 +18,7 @@ import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbFile
 import com.tencent.bugly.crashreport.BuglyLog
 import com.tencent.bugly.crashreport.CrashReport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -153,13 +154,30 @@ class ImageViewerActivity : AppCompatActivity() {
                 if (bitmap != null) {
                     binding.imageView.setImageBitmap(bitmap)
                 } else {
-                    // 上报图片解码失败到 Bugly
-                    BuglyLog.e("ImageViewer", "图片解码返回 null: ${file.name}, 格式: ${file.getExtension()}, 大小: ${file.formatSize()}")
+                    // 解码返回 null：文件损坏 / 扩展名与实际格式不符 / 下载不完整
+                    // 记录详细原因并上报 Bugly（此前仅写本地日志，不会上传）
+                    val downloaded = tempImageFile?.length() ?: -1L
+                    val reason = if (file.size > 0 && downloaded in 0 until file.size) {
+                        "下载不完整(${downloaded}/${file.size}字节)"
+                    } else {
+                        "解码返回 null"
+                    }
+                    val detail = "图片预览失败: $reason, 文件=${file.name}, 格式=${file.getExtension()}, " +
+                        "大小=${file.size}B, 路径=${file.path}"
+                    BuglyLog.e("ImageViewer", detail)
+                    CrashReport.postCatchedException(IllegalStateException(detail))
                     showToast(getString(R.string.image_load_failed))
                 }
+            } catch (e: CancellationException) {
+                // 用户退出页面导致的协程正常取消，不属于错误，不上报
+                throw e
             } catch (e: Exception) {
-                // 上报图片加载错误到 Bugly
-                BuglyLog.e("ImageViewer", "图片加载失败: ${file.name}, 格式: ${file.getExtension()}, 大小: ${file.formatSize()}")
+                // 下载或解码过程抛异常 —— 记录文件上下文并上报 Bugly
+                BuglyLog.e(
+                    "ImageViewer",
+                    "图片加载失败: ${file.name}, 格式: ${file.getExtension()}, 大小: ${file.formatSize()}, " +
+                        "路径: ${file.path}, error=${e.message}"
+                )
                 CrashReport.postCatchedException(e)
                 showToast(getString(R.string.load_failed, e.message ?: ""))
             } finally {

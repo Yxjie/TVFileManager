@@ -28,9 +28,15 @@ class SmbDataSource : BaseDataSource(true) {
     private var bytesRemaining: Long = 0L
     private var openedDataSpec: DataSpec? = null
 
+    /** 是否已调用 transferStarted —— close() 中据此成对调用 transferEnded() */
+    private var transferHasStarted = false
+
     override fun open(dataSpec: DataSpec): Long {
         openedDataSpec = dataSpec
         val uri = dataSpec.uri
+
+        // 通知监听器传输开始初始化（约定：在任何阻塞式 I/O 之前调用）
+        transferInitializing(dataSpec)
 
         // 从 URI 提取 SMB 远程路径
         // URI 格式: smb://server/share/path/to/file
@@ -64,7 +70,14 @@ class SmbDataSource : BaseDataSource(true) {
             throw IOException("请求的位置超出文件范围")
         }
 
-        transferInitializing(dataSpec)
+        // 通知监听器传输已正式开始。
+        // 关键修复：BaseDataSource 只在此处记录 dataSpec 并回调
+        // DefaultBandwidthMeter.onTransferStart；此前缺少该调用，导致 read() 中
+        // bytesTransferred() 把 null DataSpec 传给 BandwidthMeter，
+        // 触发 DefaultBandwidthMeter.isTransferAtFullNetworkSpeed 的
+        // NullPointerException（Bugly 崩溃：DataSpec.isFlagSet on null）。
+        transferStarted(dataSpec)
+        transferHasStarted = true
         return bytesRemaining
     }
 
@@ -98,6 +111,12 @@ class SmbDataSource : BaseDataSource(true) {
     override fun getUri(): Uri? = openedDataSpec?.uri
 
     override fun close() {
+        // 与 transferStarted 成对：通知监听器传输结束，
+        // 让 DefaultBandwidthMeter 正确结算带宽采样（streamCount 配对）
+        if (transferHasStarted) {
+            transferEnded()
+            transferHasStarted = false
+        }
         openedDataSpec = null
         streamHandle?.close()
         streamHandle = null
