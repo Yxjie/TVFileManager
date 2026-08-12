@@ -98,6 +98,14 @@ class SmbConnectionManager {
         for (entry in entries) {
             val fileName = entry.fileName
             if (fileName == "." || fileName == "..") continue
+            // 过滤隐藏的系统元数据文件：
+            // - "._xxx.jpg"：macOS AppleDouble 资源分支文件（macOS 客户端访问 SMB 共享时产生），
+            //   扩展名与真实媒体相同但内容是元数据，预览/播放必然失败（Bugly 上
+            //   "图片预览失败: 解码返回 null" 的根源）
+            // - ".DS_Store" / ".apdisk" / ".Spotlight-V100" 等：macOS Finder 元数据
+            // - "Thumbs.db" / "desktop.ini"：Windows 系统文件
+            // 这些文件对电视用户没有价值，且会导致图片查看器/播放器误报解码错误
+            if (isSystemMetadataFile(fileName)) continue
 
             val isDirectory = entry.fileAttributes and FileAttributes.FILE_ATTRIBUTE_DIRECTORY.value > 0
             val size = entry.endOfFile
@@ -245,6 +253,19 @@ class SmbConnectionManager {
             throw IllegalStateException("连接已断开")
         }
         return s.share
+    }
+
+    /**
+     * 判断是否为应在列表中隐藏的系统/隐藏元数据文件
+     *
+     * 所有以 "." 开头的条目（含 macOS 的 "._" AppleDouble 资源分支文件、
+     * .DS_Store 等）在桌面系统上默认就是隐藏的，电视端同样不展示；
+     * 另过滤 Windows 的 Thumbs.db / desktop.ini。
+     */
+    private fun isSystemMetadataFile(name: String): Boolean {
+        return name.startsWith(".") ||
+            name.equals("Thumbs.db", ignoreCase = true) ||
+            name.equals("desktop.ini", ignoreCase = true)
     }
 
     companion object {

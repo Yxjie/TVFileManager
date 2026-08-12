@@ -155,7 +155,10 @@ class ImageViewerActivity : AppCompatActivity() {
                     binding.imageView.setImageBitmap(bitmap)
                 } else {
                     // 解码返回 null：文件损坏 / 扩展名与实际格式不符 / 下载不完整
-                    // 记录详细原因并上报 Bugly（此前仅写本地日志，不会上传）
+                    // 这是数据问题而非代码缺陷 —— 仅记录日志（随下次上报一并上传），
+                    // 不再构造 IllegalStateException 作为异常上报（会在 Bugly 上
+                    // 形成大量"崩溃"噪音）。注：macOS 的 ._ 资源分支等垃圾文件
+                    // 已在 SmbConnectionManager.listFiles 中过滤，不会走到这里。
                     val downloaded = tempImageFile?.length() ?: -1L
                     val reason = if (file.size > 0 && downloaded in 0 until file.size) {
                         "下载不完整(${downloaded}/${file.size}字节)"
@@ -165,7 +168,6 @@ class ImageViewerActivity : AppCompatActivity() {
                     val detail = "图片预览失败: $reason, 文件=${file.name}, 格式=${file.getExtension()}, " +
                         "大小=${file.size}B, 路径=${file.path}"
                     BuglyLog.e("ImageViewer", detail)
-                    CrashReport.postCatchedException(IllegalStateException(detail))
                     showToast(getString(R.string.image_load_failed))
                 }
             } catch (e: CancellationException) {
