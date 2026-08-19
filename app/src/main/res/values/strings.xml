@@ -50,6 +50,7 @@
     <string name="load_failed">加载失败: %s</string>
     <string name="download_failed_detail">下载失败: %s</string>
     <string name="install_failed_check">安装失败，请检查系统设置</string>
+    <string name="apk_delete_failed">安装包 %s 删除失败，可尝试清除缓存</string>
     <string name="add_server">添加服务器</string>
     <string name="edit_server">编辑服务器</string>
     <string name="error_server_address">请输入服务器地址</string>

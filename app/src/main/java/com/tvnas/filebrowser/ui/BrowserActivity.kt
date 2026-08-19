@@ -275,11 +275,19 @@ class BrowserActivity : AppCompatActivity() {
                     // 使用 ProcessLifecycleOwner 确保 Activity 销毁后仍能清理 APK
                     ProcessLifecycleOwner.get().lifecycleScope.launch {
                         delay(30_000)
-                        ApkInstaller.deleteApk(apkFile)
+                        val deleted = withContext(Dispatchers.IO) { ApkInstaller.deleteApk(apkFile) }
+                        if (!deleted) {
+                            BuglyLog.w("Browser", "安装包删除失败: ${apkFile.name}")
+                            // Activity 可能已销毁，使用 applicationContext 弹提示
+                            Toast.makeText(applicationContext, getString(R.string.apk_delete_failed, apkFile.name), Toast.LENGTH_SHORT).show()
+                        }
                     }
                 } else {
                     showToast(getString(R.string.install_failed_check))
-                    ApkInstaller.deleteApk(apkFile)
+                    if (!ApkInstaller.deleteApk(apkFile)) {
+                        BuglyLog.w("Browser", "安装失败后安装包删除失败: ${apkFile.name}")
+                        showToast(getString(R.string.apk_delete_failed, apkFile.name))
+                    }
                 }
 
             } catch (e: Exception) {
