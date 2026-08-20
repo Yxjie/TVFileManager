@@ -1,5 +1,6 @@
 package com.tvnas.filebrowser.smb
 
+import android.os.SystemClock
 import com.hierynomus.msdtyp.AccessMask
 import com.hierynomus.msfscc.FileAttributes
 import com.hierynomus.mssmb2.SMB2CreateDisposition
@@ -24,12 +25,39 @@ import java.util.concurrent.TimeUnit
  * - listFiles：无锁（smbj DiskShare.list 内部独立打开/关闭文件，线程安全）
  * - downloadFile / getFileSize：仅在 openFile（获取句柄）时加锁，
  *   数据传输阶段不加锁，允许多个下载并发执行
- * - isConnected：无锁（仅读取 @Volatile 字段）
+ * - isConnected / isConnectedTo：无锁（仅读取 @Volatile 字段及不可变会话字段）
+ *
+ * 断线自动重连：
+ * 连接可能被外部因素随时中断（NAS 空闲超时/重启、电视休眠、网络切换等）。
+ * 所有文件操作都经过 ensureShare()：发现连接已断开时，用最近一次成功连接
+ * 的参数透明重连后再返回 share，调用方无感知。这修复了 Bugly #2004
+ * （"连接已断开"）背后真正的问题：断线后没有任何恢复路径，用户的每次
+ * 刷新/导航都失败，只能退出页面重进。
+ *
+ * 重连失败冷却：
+ * 重连失败后的 [RECONNECT_COOLDOWN_MS] 内，后续操作直接快速失败、不再重连。
+ * 否则服务器真正不可达时，ThumbnailLoader 的并发下载与 ExoPlayer 的自动重试
+ * 会各自触发完整重连（每次最长 30s 超时），串联起来长时间卡死。
+ *
+ * disconnect() 是主动断开，会清除保存的参数，不会触发自动重连。
  */
 class SmbConnectionManager {
 
     @Volatile
     private var session: SmbSession? = null
+
+    /**
+     * 最近一次成功连接的参数，用于断线后自动重连（见 ensureShare）。
+     * connect 成功后记录；disconnect（主动断开）时清除。
+     */
+    @Volatile
+    private var lastParams: ConnectionParams? = null
+
+    /**
+     * 最近一次重连失败的时刻（elapsedRealtime），0 表示没有失败记录。
+     * 仅在重连锁（reconnectAndGetShare）内读写。
+     */
+    private var lastReconnectFailureAt = 0L
 
     /**
      * 连接到 SMB 服务器
@@ -71,6 +99,8 @@ class SmbConnectionManager {
                     ?: throw IllegalStateException("无法连接到共享 '$shareName'（可能不是磁盘共享）")
 
                 this.session = SmbSession(client, connection, smbSession, share, host, port, shareName)
+                // 记住本次成功连接的参数，断线后由 ensureShare 透明自动重连
+                this.lastParams = ConnectionParams(host, port, shareName, username, password, domain)
             } catch (e: Exception) {
                 runCatching { connection.close() }
                 throw e
@@ -222,6 +252,9 @@ class SmbConnectionManager {
     fun disconnect() {
         session?.close()
         session = null
+        // 主动断开：清除重连参数，之后的操作不应把连接"复活"
+        lastParams = null
+        lastReconnectFailureAt = 0L
     }
 
     /**
@@ -236,8 +269,11 @@ class SmbConnectionManager {
     /**
      * 检查是否已连接到指定的 SMB 服务器
      * 用于避免不必要的重连（TCP 握手 + SMB 认证在电视上耗时数秒）
+     * 不加 @Synchronized：只读取 volatile 的 session 引用及不可变的会话字段。
+     * 重连期间 this 锁可能被网络 IO 持有数十秒，而本方法在主线程被调用
+     * （BrowserActivity.connectAndLoadFiles），若等锁会造成 ANR；
+     * 读到过期状态的最坏后果只是多走一次 connect，ensureShare 仍会兜底
      */
-    @Synchronized
     fun isConnectedTo(host: String, port: Int, shareName: String): Boolean {
         val s = session ?: return false
         if (!s.connection.isConnected) return false
@@ -245,14 +281,59 @@ class SmbConnectionManager {
     }
 
     /**
-     * 获取当前连接的 share，如果已断开则抛出异常
+     * 获取当前连接的 share；连接已断开时用保存的参数透明重连（见类注释）
+     *
+     * 快速路径无锁；重连路径加 this 锁并做双重检查——第一个发现断线的
+     * 线程执行重连，其余线程拿到锁后直接复用新连接，不会重复连接。
      */
     private fun ensureShare(): DiskShare {
-        val s = session ?: throw IllegalStateException("未连接到共享")
-        if (!s.connection.isConnected) {
-            throw IllegalStateException("连接已断开")
+        val s = session
+        if (s != null && s.connection.isConnected) {
+            return s.share
         }
-        return s.share
+        return reconnectAndGetShare()
+    }
+
+    /**
+     * 断线后自动重连（仅在 ensureShare 快速路径未命中时进入）
+     *
+     * 重连失败时抛出 connect 的原始异常（由调用方提示用户）；
+     * 冷却期内不重连，直接抛异常快速失败。
+     */
+    @Synchronized
+    private fun reconnectAndGetShare(): DiskShare {
+        // 双重检查：等锁期间可能已有其他线程完成了重连
+        val current = session
+        if (current != null && current.connection.isConnected) {
+            return current.share
+        }
+
+        val params = lastParams
+            ?: throw IllegalStateException("未连接到共享")
+
+        // 冷却期：刚重连失败过就不重复尝试。服务器真正不可达时，
+        // ThumbnailLoader 的并发下载、ExoPlayer 的自动重试都会反复走到这里，
+        // 没有冷却会排队做多次完整重连（每次最长 30s 超时）
+        if (lastReconnectFailureAt != 0L) {
+            val elapsed = SystemClock.elapsedRealtime() - lastReconnectFailureAt
+            if (elapsed < RECONNECT_COOLDOWN_MS) {
+                BuglyLog.i("SmbConnection", "连接已断开且处于重连冷却期（距上次失败 ${elapsed}ms），快速失败")
+                throw IllegalStateException("连接已断开")
+            }
+        }
+
+        BuglyLog.i(
+            "SmbConnection",
+            "连接已断开，自动重连: host=${params.host}, port=${params.port}, share=${params.shareName}"
+        )
+        try {
+            connect(params.host, params.port, params.shareName, params.username, params.password, params.domain)
+        } catch (e: Exception) {
+            lastReconnectFailureAt = SystemClock.elapsedRealtime()
+            throw e
+        }
+        lastReconnectFailureAt = 0L
+        return session?.share ?: throw IllegalStateException("重连后仍无可用连接")
     }
 
     /**
@@ -273,6 +354,12 @@ class SmbConnectionManager {
          * 全局共享实例，跨 Activity 复用连接
          */
         val shared = SmbConnectionManager()
+
+        /**
+         * 重连失败后的冷却时间：窗口内的操作直接快速失败、不再重连，
+         * 窗口过后的下一个操作会再次尝试（见 reconnectAndGetShare）
+         */
+        private const val RECONNECT_COOLDOWN_MS = 10_000L
     }
 }
 
@@ -295,6 +382,18 @@ private class SmbSession(
         try { client.close() } catch (_: Exception) {}
     }
 }
+
+/**
+ * 一次成功连接的参数快照，用于断线后自动重连
+ */
+private data class ConnectionParams(
+    val host: String,
+    val port: Int,
+    val shareName: String,
+    val username: String?,
+    val password: String?,
+    val domain: String?
+)
 
 /**
  * SMB 文件模型

@@ -20,15 +20,22 @@ import com.tencent.bugly.crashreport.BuglyLog
 import com.tencent.bugly.crashreport.CrashReport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 import java.io.File
 import java.io.FileOutputStream
 
 /**
- * 图片查看器 - 全屏大图，底部文件名+序号，左右键切换
+ * 图片查看器 - 全屏大图，底部文件名+序号，左右键切换，支持轮播
  */
 class ImageViewerActivity : AppCompatActivity() {
+
+    companion object {
+        private const val SLIDESHOW_INTERVAL_MS = 5_000L // 轮播间隔：当前图显示完成后再计时
+    }
 
     private lateinit var binding: ActivityImageViewerBinding
 
@@ -38,6 +45,14 @@ class ImageViewerActivity : AppCompatActivity() {
     private var imageFiles: List<SmbFile> = emptyList()
     private var currentIndex: Int = 0
     private var tempImageFile: File? = null
+
+    // 当前加载任务（切换时取消上一个，避免并发加载导致旧图覆盖新图）
+    private var loadJob: Job? = null
+    private var isLoading = false
+
+    // 轮播状态
+    private var isSlideshowOn = false
+    private var slideshowJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,6 +95,9 @@ class ImageViewerActivity : AppCompatActivity() {
             return
         }
 
+        binding.btnSlideshow.setOnClickListener { toggleSlideshow() }
+        updateSlideshowButton()
+
         loadImage(currentIndex)
     }
 
@@ -107,6 +125,9 @@ class ImageViewerActivity : AppCompatActivity() {
     /**
      * 加载图片：下载到临时文件 → inSampleSize 采样解码 → 显示
      * 避免将大图完整加载到内存（防止 OOM）
+     *
+     * 切换时先取消上一个加载任务，避免并发下载时旧图晚到覆盖新图。
+     * 加载完成（无论成败）后若轮播开启，从"显示完成"这一刻开始计时下一张。
      */
     private fun loadImage(index: Int) {
         if (index < 0 || index >= imageFiles.size) return
@@ -117,13 +138,18 @@ class ImageViewerActivity : AppCompatActivity() {
         binding.tvFileName.text = file.name
         binding.tvIndex.text = getString(R.string.image_index, index + 1, imageFiles.size)
         binding.progressBar.visibility = View.VISIBLE
+        isLoading = true
 
-        lifecycleScope.launch {
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            // 用局部变量持有本次任务的临时文件，避免与被取消的旧任务互相误删
+            var localTempFile: File? = null
             try {
                 val bitmap = withContext(Dispatchers.IO) {
                     // 下载到临时文件（而非内存）
                     val ext = file.getExtension()
                     val tempFile = File.createTempFile("img_viewer_", ".$ext", cacheDir)
+                    localTempFile = tempFile
                     tempImageFile = tempFile
                     FileOutputStream(tempFile).use { out ->
                         smbManager.downloadFile(file.path, out)
@@ -151,6 +177,9 @@ class ImageViewerActivity : AppCompatActivity() {
                     BitmapFactory.decodeFile(tempFile.absolutePath, decodeOptions)
                 }
 
+                // 任务已被取消（用户切走了）则不再碰 UI，交由新任务处理
+                if (!isActive) return@launch
+
                 if (bitmap != null) {
                     binding.imageView.setImageBitmap(bitmap)
                 } else {
@@ -159,7 +188,7 @@ class ImageViewerActivity : AppCompatActivity() {
                     // 不再构造 IllegalStateException 作为异常上报（会在 Bugly 上
                     // 形成大量"崩溃"噪音）。注：macOS 的 ._ 资源分支等垃圾文件
                     // 已在 SmbConnectionManager.listFiles 中过滤，不会走到这里。
-                    val downloaded = tempImageFile?.length() ?: -1L
+                    val downloaded = localTempFile?.length() ?: -1L
                     val reason = if (file.size > 0 && downloaded in 0 until file.size) {
                         "下载不完整(${downloaded}/${file.size}字节)"
                     } else {
@@ -171,7 +200,7 @@ class ImageViewerActivity : AppCompatActivity() {
                     showToast(getString(R.string.image_load_failed))
                 }
             } catch (e: CancellationException) {
-                // 用户退出页面导致的协程正常取消，不属于错误，不上报
+                // 用户切换图片/退出页面导致的协程正常取消，不属于错误，不上报
                 throw e
             } catch (e: Exception) {
                 // 下载或解码过程抛异常 —— 记录文件上下文并上报 Bugly
@@ -183,10 +212,15 @@ class ImageViewerActivity : AppCompatActivity() {
                 CrashReport.postCatchedException(e)
                 showToast(getString(R.string.load_failed, e.message ?: ""))
             } finally {
-                // 清理临时文件
-                tempImageFile?.delete()
-                tempImageFile = null
-                binding.progressBar.visibility = View.GONE
+                localTempFile?.delete()
+                // 被取消的任务不碰共享 UI 状态（进度条/isLoading），由新任务接管
+                if (isActive) {
+                    if (tempImageFile == localTempFile) tempImageFile = null
+                    binding.progressBar.visibility = View.GONE
+                    isLoading = false
+                    // 轮播计时从"本张显示完成"开始，加载慢也不会盲目跳张
+                    if (isSlideshowOn) scheduleNextSlide()
+                }
             }
         }
     }
@@ -227,6 +261,55 @@ class ImageViewerActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * 轮播开关（底部按钮 / MENU 键）
+     */
+    private fun toggleSlideshow() {
+        if (!isSlideshowOn && imageFiles.size < 2) {
+            showToast(getString(R.string.slideshow_need_images))
+            return
+        }
+
+        isSlideshowOn = !isSlideshowOn
+        updateSlideshowButton()
+
+        if (isSlideshowOn) {
+            showToast(getString(R.string.slideshow_started))
+            // 当前图正在加载时由 loadImage 完成后计时；否则立即开始计时
+            if (!isLoading) scheduleNextSlide()
+        } else {
+            showToast(getString(R.string.slideshow_stopped))
+            slideshowJob?.cancel()
+            slideshowJob = null
+        }
+    }
+
+    /**
+     * 安排下一张轮播：延迟从调用时刻（即当前图显示完成后）开始计算，
+     * 加载再慢也不会出现"没加载出来就跳下一张"
+     */
+    private fun scheduleNextSlide() {
+        if (!isSlideshowOn) return
+        slideshowJob?.cancel()
+        slideshowJob = lifecycleScope.launch {
+            delay(SLIDESHOW_INTERVAL_MS)
+            if (isSlideshowOn) {
+                // 到末尾循环回第一张
+                if (currentIndex < imageFiles.size - 1) {
+                    loadImage(currentIndex + 1)
+                } else {
+                    loadImage(0)
+                }
+            }
+        }
+    }
+
+    private fun updateSlideshowButton() {
+        binding.btnSlideshow.text = getString(
+            if (isSlideshowOn) R.string.slideshow_stop else R.string.slideshow_start
+        )
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN -> {
@@ -235,6 +318,10 @@ class ImageViewerActivity : AppCompatActivity() {
             }
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_UP -> {
                 showPrevious()
+                true
+            }
+            KeyEvent.KEYCODE_MENU -> {
+                toggleSlideshow()
                 true
             }
             KeyEvent.KEYCODE_BACK -> {

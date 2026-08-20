@@ -19,6 +19,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ActivityVideoPlayerBinding
 import com.tvnas.filebrowser.media.MimeTypeUtil
+import com.tvnas.filebrowser.media.PlayPositionStore
 import com.tvnas.filebrowser.media.SmbDataSourceFactory
 import com.tvnas.filebrowser.smb.ServerStorage
 import com.tvnas.filebrowser.smb.SmbFile
@@ -38,6 +39,12 @@ import kotlinx.coroutines.launch
  * - 中文错误提示
  */
 class VideoPlayerActivity : AppCompatActivity() {
+
+    companion object {
+        private const val MIN_RESUME_MS = 10_000L    // 播放不足 10 秒不记录续播位置
+        private const val END_MARGIN_MS = 15_000L    // 距结尾 15 秒内视为已看完，清除记录
+        private const val SAVE_INTERVAL_MS = 10_000L // 播放中定时保存间隔
+    }
 
     private lateinit var binding: ActivityVideoPlayerBinding
     private var player: ExoPlayer? = null
@@ -98,6 +105,21 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         initializePlayer()
         playVideo(currentIndex)
+        startPeriodicPositionSave()
+    }
+
+    /**
+     * 播放中定时保存进度，防止电视断电/崩溃导致进度丢失
+     */
+    private fun startPeriodicPositionSave() {
+        lifecycleScope.launch {
+            while (true) {
+                delay(SAVE_INTERVAL_MS)
+                if (player?.isPlaying == true) {
+                    saveCurrentPosition()
+                }
+            }
+        }
     }
 
     /**
@@ -189,6 +211,8 @@ class VideoPlayerActivity : AppCompatActivity() {
         if (index < 0 || index >= videoFiles.size) return
 
         val exoPlayer = player ?: return
+        // 先保存上一个视频的播放进度（此时 currentIndex 仍指向它）
+        saveCurrentPosition()
         currentIndex = index
         val file = videoFiles[index]
 
@@ -217,8 +241,42 @@ class VideoPlayerActivity : AppCompatActivity() {
             .createMediaSource(mediaItem)
 
         exoPlayer.setMediaSource(mediaSource)
+
+        // 断点续播：恢复之前记录的播放位置
+        val savedPosition = PlayPositionStore.get(this, server, share, file)
+        if (savedPosition > MIN_RESUME_MS) {
+            exoPlayer.seekTo(savedPosition)
+            showToast(getString(R.string.resume_playback, formatTime(savedPosition)))
+        }
+
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
+    }
+
+    /**
+     * 保存当前视频的播放位置；已看完（接近结尾）则清除记录
+     */
+    private fun saveCurrentPosition() {
+        val exoPlayer = player ?: return
+        val file = videoFiles.getOrNull(currentIndex) ?: return
+        val position = exoPlayer.currentPosition
+        val duration = exoPlayer.duration
+        if (duration > 0 && position >= duration - END_MARGIN_MS) {
+            PlayPositionStore.clear(this, server, share, file)
+        } else if (position > MIN_RESUME_MS) {
+            PlayPositionStore.save(this, server, share, file, position)
+        }
+    }
+
+    /**
+     * 毫秒转 mm:ss / h:mm:ss
+     */
+    private fun formatTime(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val h = totalSeconds / 3600
+        val m = (totalSeconds % 3600) / 60
+        val s = totalSeconds % 60
+        return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%02d:%02d", m, s)
     }
 
     /**
@@ -334,11 +392,13 @@ class VideoPlayerActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        saveCurrentPosition()
         player?.playWhenReady = false
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        saveCurrentPosition()
         player?.release()
         player = null
     }

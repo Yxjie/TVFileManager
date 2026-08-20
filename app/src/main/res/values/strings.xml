@@ -96,4 +96,12 @@
     <string name="video_connection_lost">连接中断，请检查网络</string>
     <string name="last_video">已经是最后一个视频</string>
     <string name="first_video">已经是第一个视频</string>
+    <string name="resume_playback">已从 %s 继续播放</string>
+
+    <!-- Image Slideshow -->
+    <string name="slideshow_start">开启轮播</string>
+    <string name="slideshow_stop">停止轮播</string>
+    <string name="slideshow_started">轮播已开启</string>
+    <string name="slideshow_stopped">轮播已关闭</string>
+    <string name="slideshow_need_images">至少需要 2 张图片才能轮播</string>
 </resources>
