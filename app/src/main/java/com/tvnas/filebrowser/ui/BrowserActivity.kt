@@ -19,8 +19,8 @@ import com.tvnas.filebrowser.smb.ServerStorage
 import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbFile
 import com.tencent.bugly.crashreport.BuglyLog
-import com.tencent.bugly.crashreport.CrashReport
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -59,6 +59,9 @@ class BrowserActivity : AppCompatActivity() {
 
     private var currentPath: String = ""
     private val pathStack: ArrayDeque<String> = ArrayDeque()
+
+    // 当前列表加载任务；快速进出目录时取消上一个，避免旧结果覆盖新目录
+    private var loadJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -129,7 +132,6 @@ class BrowserActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 binding.progressBar.visibility = View.GONE
                 BuglyLog.e("Browser", "连接并加载文件失败: server=$server:$port, share=$share, path=$currentPath, error=${e.message}")
-                CrashReport.postCatchedException(e)
                 showToast(getString(R.string.connect_failed_detail, e.message ?: ""))
                 finish()
             }
@@ -137,9 +139,11 @@ class BrowserActivity : AppCompatActivity() {
     }
 
     private fun loadFiles(path: String) {
+        // 快速进出目录时取消上一个加载任务，避免旧结果覆盖新目录
+        loadJob?.cancel()
         binding.progressBar.visibility = View.VISIBLE
 
-        lifecycleScope.launch {
+        loadJob = lifecycleScope.launch {
             try {
                 val files = withContext(Dispatchers.IO) {
                     smbManager.listFiles(path)
@@ -158,9 +162,11 @@ class BrowserActivity : AppCompatActivity() {
 
                 updatePathDisplay()
                 binding.tvItemCount.text = getString(R.string.items_count, files.size)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 被新 loadFiles 取消，不提示也不上报
+                throw e
             } catch (e: Exception) {
                 BuglyLog.e("Browser", "加载文件列表失败: server=$server:$port, share=$share, path=$path, error=${e.message}")
-                CrashReport.postCatchedException(e)
                 showToast(getString(R.string.load_failed, e.message ?: ""))
             } finally {
                 binding.progressBar.visibility = View.GONE
@@ -254,11 +260,16 @@ class BrowserActivity : AppCompatActivity() {
 
                 withContext(Dispatchers.IO) {
                     FileOutputStream(apkFile).use { outputStream ->
+                        // 只在整数百分比变化时切回主线程更新 UI，避免每 64KB 一次的
+                        // runOnUiThread 调用刷爆主线程消息队列（大 APK 上万次）
+                        var lastPercent = -1
                         smbManager.downloadFile(file.path, outputStream) { downloaded, total ->
-                            val progress = if (total > 0) (downloaded * 100 / total).toInt() else 0
-                            // 使用 withContext 而非 runOnUiThread，避免消息队列竞态
-                            runOnUiThread {
-                                updateDownloadProgress(getString(R.string.downloading), progress)
+                            val percent = if (total > 0) (downloaded * 100 / total).toInt() else 0
+                            if (percent != lastPercent) {
+                                lastPercent = percent
+                                runOnUiThread {
+                                    updateDownloadProgress(getString(R.string.downloading), percent)
+                                }
                             }
                         }
                     }
@@ -293,7 +304,6 @@ class BrowserActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 hideDownloadProgress()
                 BuglyLog.e("Browser", "APK 下载失败: ${file.name}, 大小: ${file.formatSize()}, 路径: ${file.path}, error=${e.message}")
-                CrashReport.postCatchedException(e)
                 showToast(getString(R.string.download_failed_detail, e.message ?: ""))
             }
         }
@@ -305,15 +315,11 @@ class BrowserActivity : AppCompatActivity() {
 
         if (currentIndex == -1) return
 
-        val imageListJson = ArrayList(imageFiles.map {
-            "${it.name}|${it.path}|${it.size}|${it.lastModified}"
-        })
-
         // 只传 serverId，不传密码等敏感信息
         val intent = Intent(this, ImageViewerActivity::class.java).apply {
             putExtra("serverId", serverId)
             putExtra("currentIndex", currentIndex)
-            putStringArrayListExtra("imageFiles", imageListJson)
+            putParcelableArrayListExtra("imageFiles", ArrayList(imageFiles))
         }
         startActivity(intent)
     }
@@ -327,14 +333,10 @@ class BrowserActivity : AppCompatActivity() {
 
         if (currentIndex == -1) return
 
-        val videoListJson = ArrayList(videoFiles.map {
-            "${it.name}|${it.path}|${it.size}|${it.lastModified}"
-        })
-
         val intent = Intent(this, VideoPlayerActivity::class.java).apply {
             putExtra("serverId", serverId)
             putExtra("currentIndex", currentIndex)
-            putStringArrayListExtra("videoFiles", videoListJson)
+            putParcelableArrayListExtra("videoFiles", ArrayList(videoFiles))
         }
         startActivity(intent)
     }

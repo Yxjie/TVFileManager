@@ -6,8 +6,7 @@ import java.io.File
 /**
  * 缓存管理工具
  * 管理 thumbnails 和 apks 两个缓存目录
- */
-object CacheManager {
+ */object CacheManager {
     
     private const val THUMBNAILS_DIR = "thumbnails"
     private const val APK_CACHE_DIR = "apks"
@@ -38,7 +37,7 @@ object CacheManager {
      */
     fun getFormattedCacheSize(context: Context): String {
         val size = getCacheSize(context)
-        return formatFileSize(size)
+        return CommonFormat.formatFileSize(size)
     }
     
     /**
@@ -99,17 +98,5 @@ object CacheManager {
             }
         }
         return count
-    }
-    
-    /**
-     * 格式化文件大小为可读字符串
-     */
-    private fun formatFileSize(bytes: Long): String {
-        return when {
-            bytes < 1024 -> "$bytes B"
-            bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-            bytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
-            else -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
-        }
     }
 }

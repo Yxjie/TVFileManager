@@ -1,23 +1,21 @@
 package com.tvnas.filebrowser.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
-import android.view.WindowInsets
-import android.view.WindowInsetsController
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ActivityImageViewerBinding
 import com.tvnas.filebrowser.smb.ServerStorage
 import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbFile
+import com.tvnas.filebrowser.util.BitmapSampler
+import com.tvnas.filebrowser.util.FullscreenHelper
 import com.tencent.bugly.crashreport.BuglyLog
-import com.tencent.bugly.crashreport.CrashReport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,8 +23,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
-import java.io.File
-import java.io.FileOutputStream
+import java.io.BufferedInputStream
+import java.io.FilterInputStream
+import java.io.InputStream
 
 /**
  * 图片查看器 - 全屏大图，底部文件名+序号，左右键切换，支持轮播
@@ -44,7 +43,6 @@ class ImageViewerActivity : AppCompatActivity() {
 
     private var imageFiles: List<SmbFile> = emptyList()
     private var currentIndex: Int = 0
-    private var tempImageFile: File? = null
 
     // 当前加载任务（切换时取消上一个，避免并发加载导致旧图覆盖新图）
     private var loadJob: Job? = null
@@ -75,19 +73,10 @@ class ImageViewerActivity : AppCompatActivity() {
 
         currentIndex = intent.getIntExtra("currentIndex", 0)
 
-        val imageListJson = intent.getStringArrayListExtra("imageFiles")
-        if (imageListJson != null) {
-            imageFiles = imageListJson.map { json ->
-                val parts = json.split("|")
-                SmbFile(
-                    name = parts.getOrElse(0) { "" },
-                    path = parts.getOrElse(1) { "" },
-                    isDirectory = false,
-                    size = parts.getOrElse(2) { "0" }.toLongOrNull() ?: 0,
-                    lastModified = parts.getOrElse(3) { "0" }.toLongOrNull() ?: 0
-                )
-            }
-        }
+        // 图片列表由 BrowserActivity 以 ParcelableArrayList 传入
+        @Suppress("DEPRECATION")
+        val parcelableImageList = intent.getParcelableArrayListExtra<SmbFile>("imageFiles")
+        imageFiles = parcelableImageList ?: emptyList()
 
         if (imageFiles.isEmpty()) {
             showToast(getString(R.string.image_not_found))
@@ -105,28 +94,15 @@ class ImageViewerActivity : AppCompatActivity() {
      * 使用现代 API 设置全屏沉浸模式
      */
     private fun setupFullscreen() {
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.insetsController?.let { controller ->
-                controller.hide(WindowInsets.Type.systemBars())
-                controller.systemBarsBehavior =
-                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                )
-        }
+        FullscreenHelper.setup(this)
     }
 
     /**
-     * 加载图片：下载到临时文件 → inSampleSize 采样解码 → 显示
-     * 避免将大图完整加载到内存（防止 OOM）
+     * 加载图片：SMB 流式解码 → inSampleSize 采样 → 显示
+     * 不再把整图下载到临时文件，直接从 SMB 流边读边解码（省去落盘 I/O），
+     * 并通过采样避免将大图完整加载到内存（防止 OOM）
      *
-     * 切换时先取消上一个加载任务，避免并发下载时旧图晚到覆盖新图。
+     * 切换时先取消上一个加载任务，避免并发加载时旧图晚到覆盖新图。
      * 加载完成（无论成败）后若轮播开启，从"显示完成"这一刻开始计时下一张。
      */
     private fun loadImage(index: Int) {
@@ -142,39 +118,44 @@ class ImageViewerActivity : AppCompatActivity() {
 
         loadJob?.cancel()
         loadJob = lifecycleScope.launch {
-            // 用局部变量持有本次任务的临时文件，避免与被取消的旧任务互相误删
-            var localTempFile: File? = null
+            // 流式读取的字节数，用于解码失败时判断是否"读取不完整"
+            var bytesStreamed = 0L
             try {
                 val bitmap = withContext(Dispatchers.IO) {
-                    // 下载到临时文件（而非内存）
-                    val ext = file.getExtension()
-                    val tempFile = File.createTempFile("img_viewer_", ".$ext", cacheDir)
-                    localTempFile = tempFile
-                    tempImageFile = tempFile
-                    FileOutputStream(tempFile).use { out ->
-                        smbManager.downloadFile(file.path, out)
-                    }
-
                     // 获取屏幕尺寸用于计算采样率
                     val displayMetrics = resources.displayMetrics
                     val screenWidth = displayMetrics.widthPixels
                     val screenHeight = displayMetrics.heightPixels
 
-                    // 先获取原始尺寸
+                    // 第一遍：只读文件头拿尺寸（仅下载头部几百 KB，读完即关流）
                     val boundsOptions = BitmapFactory.Options().apply {
                         inJustDecodeBounds = true
                     }
-                    BitmapFactory.decodeFile(tempFile.absolutePath, boundsOptions)
+                    smbManager.openInputStream(file.path).use { raw ->
+                        BitmapFactory.decodeStream(
+                            CountingInputStream(BufferedInputStream(raw)) { bytesStreamed += it },
+                            null, boundsOptions
+                        )
+                    }
+                    if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) {
+                        return@withContext null
+                    }
 
                     // 计算采样率，避免加载超出屏幕大小的图片
-                    val sampleSize = calculateInSampleSize(
+                    val sampleSize = BitmapSampler.calculateInSampleSize(
                         boundsOptions, screenWidth, screenHeight
                     )
 
+                    // 第二遍：重新打开流，从 SMB 边读边解码（不落盘、不整图进内存）
                     val decodeOptions = BitmapFactory.Options().apply {
                         inSampleSize = sampleSize
                     }
-                    BitmapFactory.decodeFile(tempFile.absolutePath, decodeOptions)
+                    smbManager.openInputStream(file.path).use { raw ->
+                        BitmapFactory.decodeStream(
+                            CountingInputStream(BufferedInputStream(raw)) { bytesStreamed += it },
+                            null, decodeOptions
+                        )
+                    }
                 }
 
                 // 任务已被取消（用户切走了）则不再碰 UI，交由新任务处理
@@ -183,39 +164,44 @@ class ImageViewerActivity : AppCompatActivity() {
                 if (bitmap != null) {
                     binding.imageView.setImageBitmap(bitmap)
                 } else {
-                    // 解码返回 null：文件损坏 / 扩展名与实际格式不符 / 下载不完整
+                    // 解码返回 null：文件损坏 / 扩展名与实际格式不符 / 读取不完整
                     // 这是数据问题而非代码缺陷 —— 仅记录日志（随下次上报一并上传），
                     // 不再构造 IllegalStateException 作为异常上报（会在 Bugly 上
                     // 形成大量"崩溃"噪音）。注：macOS 的 ._ 资源分支等垃圾文件
                     // 已在 SmbConnectionManager.listFiles 中过滤，不会走到这里。
-                    val downloaded = localTempFile?.length() ?: -1L
-                    val reason = if (file.size > 0 && downloaded in 0 until file.size) {
-                        "下载不完整(${downloaded}/${file.size}字节)"
+                    val reason = if (file.size > 0 && bytesStreamed in 1 until file.size) {
+                        "读取不完整(${bytesStreamed}/${file.size}字节)"
                     } else {
                         "解码返回 null"
                     }
                     val detail = "图片预览失败: $reason, 文件=${file.name}, 格式=${file.getExtension()}, " +
                         "大小=${file.size}B, 路径=${file.path}"
                     BuglyLog.e("ImageViewer", detail)
-                    showToast(getString(R.string.image_load_failed))
+                    // 轮播时连续遇到坏图会在每张触发 Toast（每 ~5s 一次），刷屏且无意义，
+                    // 因为紧接着就会自动前进到下一张；手动切换时才弹提示。
+                    if (!isSlideshowOn) {
+                        showToast(getString(R.string.image_load_failed))
+                    }
                 }
             } catch (e: CancellationException) {
                 // 用户切换图片/退出页面导致的协程正常取消，不属于错误，不上报
                 throw e
             } catch (e: Exception) {
-                // 下载或解码过程抛异常 —— 记录文件上下文并上报 Bugly
+                // 流式读取或解码过程抛异常 —— 记录文件上下文。
+                // 多为网络/数据问题（业务失败），用 BuglyLog.e 记录而非
+                // postCatchedException，避免污染 Bugly 崩溃统计。
                 BuglyLog.e(
                     "ImageViewer",
                     "图片加载失败: ${file.name}, 格式: ${file.getExtension()}, 大小: ${file.formatSize()}, " +
                         "路径: ${file.path}, error=${e.message}"
                 )
-                CrashReport.postCatchedException(e)
-                showToast(getString(R.string.load_failed, e.message ?: ""))
+                // 轮播时静默前进（见上方 null 分支注释），不弹 Toast 刷屏
+                if (!isSlideshowOn) {
+                    showToast(getString(R.string.load_failed, e.message ?: ""))
+                }
             } finally {
-                localTempFile?.delete()
                 // 被取消的任务不碰共享 UI 状态（进度条/isLoading），由新任务接管
                 if (isActive) {
-                    if (tempImageFile == localTempFile) tempImageFile = null
                     binding.progressBar.visibility = View.GONE
                     isLoading = false
                     // 轮播计时从"本张显示完成"开始，加载慢也不会盲目跳张
@@ -225,24 +211,26 @@ class ImageViewerActivity : AppCompatActivity() {
         }
     }
 
-    private fun calculateInSampleSize(
-        options: BitmapFactory.Options,
-        reqWidth: Int,
-        reqHeight: Int
-    ): Int {
-        val (height, width) = options.outHeight to options.outWidth
-        var inSampleSize = 1
+    /**
+     * 统计已读取字节数的 InputStream 包装：
+     * 记录累计字节数，解码失败时用于诊断是否"读取不完整"。
+     */
+    private class CountingInputStream(
+        input: InputStream,
+        private val onBytesRead: (Int) -> Unit
+    ) : FilterInputStream(input) {
 
-        if (height > reqHeight || width > reqWidth) {
-            val halfHeight = height / 2
-            val halfWidth = width / 2
-            while ((halfHeight / inSampleSize) >= reqHeight &&
-                (halfWidth / inSampleSize) >= reqWidth
-            ) {
-                inSampleSize *= 2
-            }
+        override fun read(): Int {
+            val b = super.read()
+            if (b >= 0) onBytesRead(1)
+            return b
         }
-        return inSampleSize
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            val n = super.read(b, off, len)
+            if (n > 0) onBytesRead(n)
+            return n
+        }
     }
 
     private fun showNext() {
@@ -338,7 +326,7 @@ class ImageViewerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        tempImageFile?.delete()
+        loadJob?.cancel()
         // 不断开共享连接 — 返回 BrowserActivity 后仍可使用
     }
 }

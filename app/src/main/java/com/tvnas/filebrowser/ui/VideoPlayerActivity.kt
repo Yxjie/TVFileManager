@@ -1,15 +1,11 @@
 package com.tvnas.filebrowser.ui
 
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
-import android.view.WindowInsets
-import android.view.WindowInsetsController
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -23,8 +19,9 @@ import com.tvnas.filebrowser.media.PlayPositionStore
 import com.tvnas.filebrowser.media.SmbDataSourceFactory
 import com.tvnas.filebrowser.smb.ServerStorage
 import com.tvnas.filebrowser.smb.SmbFile
+import com.tvnas.filebrowser.util.FullscreenHelper
 import com.tencent.bugly.crashreport.BuglyLog
-import com.tencent.bugly.crashreport.CrashReport
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -57,6 +54,9 @@ class VideoPlayerActivity : AppCompatActivity() {
     // 用于判断 D-pad 左右键是切换视频还是 seek
     private var isControllerVisible: Boolean = false
 
+    // 自动隐藏信息栏的延时任务；重新计时前取消上一个，避免多个延时叠加
+    private var hideInfoJob: Job? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityVideoPlayerBinding.inflate(layoutInflater)
@@ -83,19 +83,10 @@ class VideoPlayerActivity : AppCompatActivity() {
 
         currentIndex = intent.getIntExtra("currentIndex", 0)
 
-        val videoListJson = intent.getStringArrayListExtra("videoFiles")
-        if (videoListJson != null) {
-            videoFiles = videoListJson.map { json ->
-                val parts = json.split("|")
-                SmbFile(
-                    name = parts.getOrElse(0) { "" },
-                    path = parts.getOrElse(1) { "" },
-                    isDirectory = false,
-                    size = parts.getOrElse(2) { "0" }.toLongOrNull() ?: 0,
-                    lastModified = parts.getOrElse(3) { "0" }.toLongOrNull() ?: 0
-                )
-            }
-        }
+        // 视频列表由 BrowserActivity 以 ParcelableArrayList 传入
+        @Suppress("DEPRECATION")
+        val parcelableList = intent.getParcelableArrayListExtra<SmbFile>("videoFiles")
+        videoFiles = parcelableList ?: emptyList()
 
         if (videoFiles.isEmpty()) {
             showToast(getString(R.string.video_not_found))
@@ -126,21 +117,7 @@ class VideoPlayerActivity : AppCompatActivity() {
      * 使用现代 API 设置全屏沉浸模式
      */
     private fun setupFullscreen() {
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.insetsController?.let { controller ->
-                controller.hide(WindowInsets.Type.systemBars())
-                controller.systemBarsBehavior =
-                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                )
-        }
+        FullscreenHelper.setup(this)
     }
 
     /**
@@ -181,7 +158,7 @@ class VideoPlayerActivity : AppCompatActivity() {
                             binding.layoutError.visibility = View.GONE
                         }
                         Player.STATE_ENDED -> {
-                            // 自动播放下一个视频
+                            // 自动播放下一个；播到最后一个时循环回第一个
                             playNext(autoPlay = true)
                         }
                         Player.STATE_IDLE -> {
@@ -193,10 +170,11 @@ class VideoPlayerActivity : AppCompatActivity() {
                 override fun onPlayerError(error: PlaybackException) {
                     binding.progressBar.visibility = View.GONE
 
-                    // 上报视频播放错误到 Bugly
+                    // 记录视频播放错误到 Bugly。
+                    // 播放失败多是网络/码流/格式问题（业务失败），不是代码崩溃，
+                    // 用 BuglyLog.e 记录而非 postCatchedException，避免污染崩溃统计。
                     val currentFile = videoFiles.getOrNull(currentIndex)
-                    BuglyLog.e("VideoPlayer", "播放失败: ${currentFile?.name ?: "未知"}, 格式: ${currentFile?.getExtension() ?: "未知"}, 路径: smb://$server/$share/${currentFile?.path ?: "未知"}")
-                    CrashReport.postCatchedException(error)
+                    BuglyLog.e("VideoPlayer", "播放失败: ${currentFile?.name ?: "未知"}, 格式: ${currentFile?.getExtension() ?: "未知"}, 路径: smb://$server/$share/${currentFile?.path ?: "未知"}, error=${error.message}")
 
                     showError(getString(R.string.video_playback_error, error.message ?: "未知错误"))
                 }
@@ -287,12 +265,24 @@ class VideoPlayerActivity : AppCompatActivity() {
         binding.tvError.text = message
     }
 
+    /** 重试当前视频：错误布局可见时按 OK 触发，避免只能退出重进 */
+    private fun retryPlayback() {
+        playVideo(currentIndex)
+    }
+
     /**
      * 播放下一个视频
+     *
+     * @param autoPlay 是否由播放结束自动触发。为 true 且已到最后一个视频时，
+     *                 循环回第一个视频（连续播放列表不中断）；仅手动切到最后一个
+     *                 时提示已是最后一个。
      */
     private fun playNext(autoPlay: Boolean = false) {
         if (currentIndex < videoFiles.size - 1) {
             playVideo(currentIndex + 1)
+        } else if (autoPlay && videoFiles.size > 1) {
+            // 自动播放到末尾：循环回第一个，避免停在 ENDED 状态黑屏
+            playVideo(0)
         } else if (!autoPlay) {
             showToast(getString(R.string.last_video))
         }
@@ -313,7 +303,10 @@ class VideoPlayerActivity : AppCompatActivity() {
      * 隐藏信息栏（播放时自动隐藏，提升沉浸感）
      */
     private fun scheduleHideInfoBars() {
-        lifecycleScope.launch {
+        // 取消上一个延时任务再启新的：否则每次按 OK/上下键都叠加一个 5s 协程，
+        // 最早那个仍会按原计划隐藏信息栏
+        hideInfoJob?.cancel()
+        hideInfoJob = lifecycleScope.launch {
             delay(5000)
             if (player?.isPlaying == true) {
                 binding.bottomBar.visibility = View.GONE
@@ -349,8 +342,12 @@ class VideoPlayerActivity : AppCompatActivity() {
                     true
                 }
             }
-            // OK 键：切换播放/暂停
+            // OK 键：错误布局可见时重试当前视频；否则切换播放/暂停
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                if (binding.layoutError.visibility == View.VISIBLE) {
+                    retryPlayback()
+                    return true
+                }
                 player?.let {
                     if (it.isPlaying) {
                         it.pause()
