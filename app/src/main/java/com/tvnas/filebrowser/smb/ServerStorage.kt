@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.tencent.bugly.crashreport.BuglyLog
 import com.tvnas.filebrowser.util.PasswordEncryptor
 
 /**
@@ -48,26 +49,31 @@ class ServerStorage(context: Context) {
         val json = prefs.getString(KEY_SERVERS, null) ?: return emptyList()
 
         // 优先尝试新格式（加密密码）
+        // 用 getParameterized 而非匿名 object : TypeToken<...>(){}：后者依赖
+        // 类文件的泛型 Signature 属性，release 下可能被 R8 剥离，导致运行期
+        // 类型退化成 raw List、解析静默失败（表现为「服务器配置不存在」）
         try {
-            val type = object : TypeToken<List<StoredServerConfig>>() {}.type
+            val type = TypeToken.getParameterized(List::class.java, StoredServerConfig::class.java).type
             val stored: List<StoredServerConfig> = gson.fromJson(json, type)
             if (stored.isNotEmpty() && stored[0].encryptedPassword != null) {
                 return stored.map { it.toServerConfig() }
             }
-        } catch (_: Exception) {
-            // 新格式解析失败，继续尝试旧格式
+        } catch (e: Exception) {
+            // 新格式解析失败，继续尝试旧格式；上报避免静默失效难以定位
+            BuglyLog.e("ServerStorage", "新格式解析失败: ${e.javaClass.simpleName}: ${e.message}")
         }
 
         // Fallback：尝试旧格式（明文密码，字段名为 password）
         return try {
-            val type = object : TypeToken<List<ServerConfig>>() {}.type
+            val type = TypeToken.getParameterized(List::class.java, ServerConfig::class.java).type
             val oldServers: List<ServerConfig> = gson.fromJson(json, type)
             if (oldServers.isNotEmpty()) {
                 // 自动迁移为加密格式
                 saveServerList(oldServers)
             }
             oldServers
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            BuglyLog.e("ServerStorage", "旧格式解析失败: ${e.javaClass.simpleName}: ${e.message}")
             emptyList()
         }
     }

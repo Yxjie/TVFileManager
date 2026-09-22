@@ -89,6 +89,7 @@
     <string name="go_settings">去设置</string>
 
     <!-- Video Player -->
+    <string name="video_play_badge">播放</string>
     <string name="video_player_hint">OK 播放/暂停    ← → 切换视频    BACK 返回</string>
     <string name="video_index">%1$d / %2$d</string>
     <string name="video_not_found">没有视频文件</string>

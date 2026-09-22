@@ -8,6 +8,15 @@ android {
     namespace = "com.tvnas.filebrowser"
     compileSdk = 34
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("${rootProject.projectDir}/tvmanage.jks")
+            storePassword = "yxjie5506"
+            keyAlias = "tvmanage"
+            keyPassword = "yxjie5506"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.tvnas.filebrowser"
         minSdk = 24
@@ -19,7 +28,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
@@ -32,6 +43,16 @@ android {
     buildFeatures {
         viewBinding = true
         buildConfig = true
+    }
+    packaging {
+        resources {
+            // bcprov-jdk18on 与 bcutil-jdk18on 都自带 META-INF/versions/9/OSGI-INF/MANIFEST.MF，
+            // 合并时冲突；OSGI manifest 对 Android 运行无用，排除即可
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 
@@ -60,6 +81,9 @@ dependencies {
 
     // Glide for icons
     implementation("com.github.bumptech.glide:glide:4.16.0")
+
+    // EXIF 解析（含 HEIC/HEIF 内嵌缩略图，纯 Java 解析 ISO-BMFF，不依赖系统 API 版本）
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
 
     // Gson for JSON
     implementation("com.google.code.gson:gson:2.10.1")

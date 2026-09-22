@@ -11,12 +11,27 @@
     android:layout_margin="4dp"
     android:stateListAnimator="@animator/item_scale">
 
-    <!-- Icon -->
-    <ImageView
-        android:id="@+id/ivIcon"
+    <!-- Icon（外层 FrameLayout 用于叠加视频播放角标） -->
+    <FrameLayout
         android:layout_width="64dp"
-        android:layout_height="64dp"
-        android:scaleType="centerInside" />
+        android:layout_height="64dp">
+
+        <ImageView
+            android:id="@+id/ivIcon"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerInside" />
+
+        <!-- 视频播放角标：仅视频且缩略图加载成功时显示（FileAdapter 控制） -->
+        <ImageView
+            android:id="@+id/ivPlayBadge"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_play_badge"
+            android:contentDescription="@string/video_play_badge"
+            android:visibility="gone" />
+    </FrameLayout>
 
     <!-- File Name -->
     <TextView

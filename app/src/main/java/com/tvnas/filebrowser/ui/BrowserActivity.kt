@@ -181,7 +181,7 @@ class BrowserActivity : AppCompatActivity() {
                 loadFiles(file.path)
             }
             file.isApk() -> showApkInstallDialog(file)
-            file.isDecodableImage() -> openImageViewer(file)
+            file.isViewableImage() -> openImageViewer(file)
             file.isVideo() -> openVideoPlayer(file)
             file.isImage() -> showToast(getString(R.string.unsupported_image_format, file.getExtension().uppercase()))
             else -> showToast(getString(R.string.unsupported_file_type))
@@ -310,7 +310,7 @@ class BrowserActivity : AppCompatActivity() {
     }
 
     private fun openImageViewer(file: SmbFile) {
-        val imageFiles = adapter.currentList.filter { it.isDecodableImage() }
+        val imageFiles = adapter.currentList.filter { it.isViewableImage() }
         val currentIndex = imageFiles.indexOfFirst { it.path == file.path }
 
         if (currentIndex == -1) return
@@ -391,7 +391,9 @@ class BrowserActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        thumbnailLoader.clearMemoryCache()
+        if (::thumbnailLoader.isInitialized) {
+            thumbnailLoader.clearMemoryCache()
+        }
         // 不断开共享连接 — 其他 Activity（如 ImageViewerActivity）可能还在使用
     }
 }

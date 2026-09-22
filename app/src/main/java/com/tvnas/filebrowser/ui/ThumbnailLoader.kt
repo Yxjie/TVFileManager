@@ -4,8 +4,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Bitmap.CompressFormat
 import android.graphics.BitmapFactory
-import android.media.ExifInterface
+import android.media.MediaMetadataRetriever
 import android.util.LruCache
+import android.os.Build
+import androidx.exifinterface.media.ExifInterface
 import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbFile
 import com.tvnas.filebrowser.util.BitmapSampler
@@ -69,8 +71,16 @@ class ThumbnailLoader(
                 return@withPermit bitmap
             }
 
-            // 优先尝试 EXIF 内嵌缩略图（仅下载文件前缀），失败再整图下载
-            val bitmap = tryExtractExifThumbnail(file) ?: downloadAndDecode(file)
+            // 优先尝试 EXIF 内嵌缩略图（仅下载文件前缀），失败再整图下载。
+            // 视频：不落盘，从 SMB 随机读取句柄直接抽帧（见 loadVideoThumbnail）
+            // HEIC 整图下载解码仅 API 28+ 有效（老系统无 HEIF 解码器，
+            // 下载几 MB 原图后 decodeThumbnail 必然返回 null，纯属浪费流量）；
+            // 老设备靠 EXIF 内嵌缩略图，没有则回退图标
+            val bitmap = when {
+                file.isVideo() -> loadVideoThumbnail(file)
+                file.isHeicImage() && Build.VERSION.SDK_INT < 28 -> tryExtractExifThumbnail(file)
+                else -> tryExtractExifThumbnail(file) ?: downloadAndDecode(file)
+            }
 
             if (bitmap != null) {
                 // 将缩略图压缩为 JPEG 写入缓存（~5-15KB/张），下次直接命中磁盘
@@ -90,8 +100,10 @@ class ThumbnailLoader(
     /**
      * 尝试从 EXIF 内嵌缩略图解码（仅下载文件前 exifReadCap 字节）
      *
-     * 仅对 JPEG/HEIC 有效（这两种格式把缩略图嵌在 EXIF 中）。
-     * 用 ExifInterface(InputStream) 直接解析内存字节，无需落临时文件。
+     * 仅对 JPEG/HEIC/HEIF 有效（这几种格式把缩略图嵌在 EXIF 中）。
+     * 用 androidx ExifInterface(InputStream) 直接解析内存字节，无需落临时文件；
+     * androidx 版本自带 ISO-BMFF 解析，minSdk 24 的老设备也能读 HEIC 内嵌缩略图
+     * （framework 版 ExifInterface 要 API 28 才认识 HEIF）。
      * 返回 null 表示无内嵌缩略图或格式不支持，调用方应回退到整图下载。
      */
     private fun tryExtractExifThumbnail(file: SmbFile): Bitmap? {
@@ -114,6 +126,51 @@ class ThumbnailLoader(
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * 视频抽帧生成缩略图（不落盘：通过 MediaDataSource 直接从 SMB 随机读取）
+     *
+     * - setDataSource(MediaDataSource) 为 API 23+，覆盖 minSdk 24 全部设备；
+     *   retriever 抽帧只读 moov 头和关键帧附近的数据，不会下载整个视频
+     * - 取 1s 处最近关键帧（OPTION_CLOSEST_SYNC 最快）；个别视频该处无帧时回退 0s
+     * - API 27+ 用 getScaledFrameAtTime 直接按目标尺寸出图（省内存）；
+     *   低版本 getFrameAtTime 返回原始分辨率帧，缩放后再进缓存
+     * - 失败返回 null，FileAdapter 现有 null 分支回退视频图标
+     */
+    private fun loadVideoThumbnail(file: SmbFile): Bitmap? {
+        val source = smbManager.openMediaDataSource(file.path)
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(source)
+            if (Build.VERSION.SDK_INT >= 27) {
+                retriever.getScaledFrameAtTime(
+                    1_000_000L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    maxThumbnailSize, maxThumbnailSize
+                )
+            } else {
+                val frame = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                frame?.let { f ->
+                    val scale = maxThumbnailSize.toFloat() / maxOf(f.width, f.height)
+                    if (scale >= 1f) f
+                    else Bitmap.createScaledBitmap(
+                        f,
+                        (f.width * scale).toInt().coerceAtLeast(1),
+                        (f.height * scale).toInt().coerceAtLeast(1),
+                        true
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            null
+        } finally {
+            // MediaDataSource 的 close 由框架在 release 时回调，此处兜底防句柄泄漏
+            //（smbj 的 File.close() 幂等，runCatching 保证双重关闭安全）
+            runCatching { retriever.release() }
+            runCatching { source.close() }
         }
     }
 

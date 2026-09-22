@@ -1,5 +1,6 @@
 package com.tvnas.filebrowser.smb
 
+import android.os.Build
 import android.os.Parcelable
 import android.os.SystemClock
 import com.hierynomus.msdtyp.AccessMask
@@ -288,6 +289,29 @@ class SmbConnectionManager {
     }
 
     /**
+     * 打开视频文件并返回随机访问句柄（用于 MediaMetadataRetriever 抽帧生成缩略图）
+     *
+     * 返回的 MediaDataSource 关闭时同时释放底层 SMB 文件句柄。
+     * 与 openFileForStreaming/openInputStream 一致：仅在 openFile 时持 [stateLock]
+     * 短临界区，数据传输阶段（readAt 的网络 IO）不加锁。
+     */
+    @Throws(Exception::class)
+    fun openMediaDataSource(remotePath: String): android.media.MediaDataSource {
+        val smbFile = openFileForOperation(remotePath)
+        val fileSize = smbFile.fileInformation.standardInformation.endOfFile
+        return object : android.media.MediaDataSource() {
+            override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+                if (position >= fileSize) return -1
+                return smbFile.read(buffer, position, offset, size)
+            }
+            override fun getSize(): Long = fileSize
+            override fun close() {
+                runCatching { smbFile.close() }
+            }
+        }
+    }
+
+    /**
      * 连接保证 + 获取文件句柄的统一入口。
      *
      * 1) 先调用 ensureShare()：若已断开会触发重连。重连的网络 IO 只持
@@ -541,8 +565,31 @@ data class SmbFile(
 
     fun isImage(): Boolean = getExtension() in IMAGE_EXTENSIONS
 
-    /** 是否是 BitmapFactory 可解码的图片格式（用于缩略图和查看器） */
+    /** 是否是 BitmapFactory 可解码的图片格式（用于缩略图生成和全屏查看） */
     fun isDecodableImage(): Boolean = getExtension() in DECODABLE_IMAGE_EXTENSIONS
+
+    /**
+     * 是否值得走缩略图加载流程（FileAdapter 列表预览用）
+     *
+     * = 可解码格式 + HEIC/HEIF。HEIC 缩略图有两条路径：
+     * - EXIF 内嵌缩略图（androidx ExifInterface 纯 Java 解析，全 API 版本可用）
+     * - API 28+ 系统解码器直接解整图
+     * TIFF/RAW 不在此列：老设备既不能解码，整图下载也拿不到缩略图，只会浪费流量。
+     */
+    fun isThumbnailCandidate(): Boolean =
+        isDecodableImage() || getExtension() in HEIC_EXTENSIONS
+
+    /** HEIC/HEIF（iPhone 照片） */
+    fun isHeicImage(): Boolean = getExtension() in HEIC_EXTENSIONS
+
+    /**
+     * 全屏查看器可打开的图片（BrowserActivity 点击路由 + 查看器列表过滤用）
+     *
+     * = 可解码格式 + HEIC/HEIF（仅 API 28+，老系统无 HEIF 解码器，
+     * BitmapFactory 解码 HEIC 必然返回 null，点了只会看到加载失败）。
+     */
+    fun isViewableImage(): Boolean =
+        isDecodableImage() || (isHeicImage() && Build.VERSION.SDK_INT >= 28)
 
     fun isMedia(): Boolean = getExtension() in MEDIA_EXTENSIONS
 
@@ -590,6 +637,9 @@ data class SmbFile(
             "raf",                      // Fujifilm
             "3fr",                      // Hasselblad
         )
+
+        /** HEIC/HEIF：EXIF 内嵌缩略图全 API 可读；整图解码需 API 28+ 系统 HEIF 解码器 */
+        private val HEIC_EXTENSIONS = setOf("heic", "heif")
 
         val VIDEO_EXTENSIONS = setOf(
             "mp4", "m4v",          // MP4

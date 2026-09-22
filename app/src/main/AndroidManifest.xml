@@ -16,7 +16,7 @@
     <application
         android:name=".TVFileManagerApp"
         android:allowBackup="true"
-        android:banner="@string/app_name"
+        android:banner="@mipmap/ic_launcher"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"

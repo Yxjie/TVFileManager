@@ -46,8 +46,13 @@ class FileAdapter(
             binding.tvName.text = file.name
 
             val iconRes = getFileIconRes(file)
+            val isVideo = file.isVideo()
 
-            if (file.isDecodableImage() && thumbnailLoader != null) {
+            // 角标默认隐藏（ViewHolder 复用，必须每次 bind 重置）：
+            // 仅"视频 + 缩略图加载成功"时在下方异步回调里置为可见
+            binding.ivPlayBadge.visibility = View.GONE
+
+            if ((file.isThumbnailCandidate() || file.isVideo()) && thumbnailLoader != null) {
                 loadJob = lifecycleScope.launch(Dispatchers.IO) {
                     val bitmap = thumbnailLoader.loadThumbnail(file)
                     withContext(Dispatchers.Main) {
@@ -60,6 +65,10 @@ class FileAdapter(
                                     .diskCacheStrategy(DiskCacheStrategy.NONE)
                                     .placeholder(iconRes)
                                     .into(binding.ivIcon)
+                                // 视频缩略图加载成功 → 显示播放角标，与图片缩略图区分
+                                if (isVideo) {
+                                    binding.ivPlayBadge.visibility = View.VISIBLE
+                                }
                             }
                         } else {
                             Glide.with(binding.root.context)
