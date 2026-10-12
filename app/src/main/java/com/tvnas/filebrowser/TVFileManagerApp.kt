@@ -2,10 +2,12 @@ package com.tvnas.filebrowser
 
 import android.app.Application
 import com.tencent.bugly.crashreport.CrashReport
+import dagger.hilt.android.HiltAndroidApp
 
 /**
  * 应用入口 — 初始化全局组件
  */
+@HiltAndroidApp
 class TVFileManagerApp : Application() {
 
     override fun onCreate() {

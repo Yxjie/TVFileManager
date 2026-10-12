@@ -4,27 +4,28 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ActivityConnectBinding
 import com.tvnas.filebrowser.smb.ServerConfig
-import com.tvnas.filebrowser.smb.ServerStorage
-import com.tvnas.filebrowser.smb.SmbConnectionManager
-import kotlinx.coroutines.Dispatchers
+import com.tvnas.filebrowser.ui.viewmodel.ConnectViewModel
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * 添加/编辑 SMB 服务器页面
  */
+@AndroidEntryPoint
 class ConnectActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityConnectBinding
-    private lateinit var serverStorage: ServerStorage
+    private val viewModel: ConnectViewModel by viewModels()
 
-    private var editingServerId: String? = null
     private var isEditMode = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,16 +33,14 @@ class ConnectActivity : AppCompatActivity() {
         binding = ActivityConnectBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        serverStorage = ServerStorage(this)
-
-        editingServerId = intent.getStringExtra("serverId")
-        isEditMode = editingServerId != null
+        val serverId = intent.getStringExtra("serverId")
+        isEditMode = serverId != null
+        viewModel.setEditingServer(serverId)
 
         setupListeners()
+        observeViewModel()
 
-        if (isEditMode) {
-            loadServerForEdit()
-        } else {
+        if (!isEditMode) {
             binding.etServerAddress.requestFocus()
         }
     }
@@ -62,17 +61,58 @@ class ConnectActivity : AppCompatActivity() {
         binding.btnDelete.visibility = if (isEditMode) View.VISIBLE else View.GONE
     }
 
-    private fun loadServerForEdit() {
-        val serverId = editingServerId ?: return
-        val server = serverStorage.getServerById(serverId) ?: return
+    private fun observeViewModel() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    viewModel.uiState.collect { state ->
+                        handleUiState(state)
+                    }
+                }
+                launch {
+                    viewModel.events.collect { event ->
+                        when (event) {
+                            is ConnectViewModel.ConnectEvent.FillForm -> fillForm(event.server)
+                            is ConnectViewModel.ConnectEvent.NavigateToBrowser -> {
+                                val intent = Intent(this@ConnectActivity, BrowserActivity::class.java).apply {
+                                    putExtra("serverId", event.serverId)
+                                }
+                                startActivity(intent)
+                                finish()
+                            }
+                            ConnectViewModel.ConnectEvent.ServerDeleted -> {
+                                showToast(getString(R.string.deleted))
+                                finish()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
+    private fun handleUiState(state: ConnectViewModel.ConnectUiState) {
+        when (state) {
+            ConnectViewModel.ConnectUiState.Idle -> setLoading(false)
+            is ConnectViewModel.ConnectUiState.Loading -> {
+                setLoading(true)
+                updateStatus(state.message)
+            }
+            is ConnectViewModel.ConnectUiState.Error -> {
+                setLoading(false)
+                updateStatus(state.message)
+                showToast(state.message)
+            }
+        }
+    }
+
+    private fun fillForm(server: ServerConfig) {
         binding.etServerAddress.setText(server.serverAddress)
         binding.etPort.setText(server.port.toString())
         binding.etShareName.setText(server.shareName)
         binding.etDomain.setText(server.domain)
         binding.etUsername.setText(server.username)
         binding.etPassword.setText(server.password)
-
         binding.btnConnect.text = getString(R.string.save_and_connect)
     }
 
@@ -84,7 +124,6 @@ class ConnectActivity : AppCompatActivity() {
         val password = binding.etPassword.text.toString()
         val domain = binding.etDomain.text.toString().trim()
 
-        // 验证必填项
         if (serverAddress.isEmpty()) {
             binding.tilServerAddress.error = getString(R.string.error_server_address)
             return
@@ -120,43 +159,7 @@ class ConnectActivity : AppCompatActivity() {
         }
         binding.tilPassword.error = null
 
-        setLoading(true)
-        updateStatus(getString(R.string.connecting_to, serverAddress))
-
-        lifecycleScope.launch {
-            val testManager = SmbConnectionManager()
-            try {
-                withContext(Dispatchers.IO) {
-                    testManager.connect(serverAddress, port, shareName, username, password, domain)
-                }
-
-                // 连接成功，保存配置
-                val serverConfig = ServerConfig(
-                    id = editingServerId ?: System.currentTimeMillis().toString(),
-                    serverAddress = serverAddress,
-                    port = port,
-                    shareName = shareName,
-                    username = username,
-                    password = password,
-                    domain = domain
-                )
-                serverStorage.saveServer(serverConfig)
-
-                // 跳转到浏览器页面（BrowserActivity 会使用共享连接）
-                val intent = Intent(this@ConnectActivity, BrowserActivity::class.java).apply {
-                    putExtra("serverId", serverConfig.id)
-                }
-                startActivity(intent)
-                finish()
-
-            } catch (e: Exception) {
-                updateStatus(getString(R.string.connect_failed_detail, e.message ?: ""))
-                showToast(getString(R.string.connect_failed_detail, e.message ?: ""))
-            } finally {
-                testManager.disconnect()
-                setLoading(false)
-            }
-        }
+        viewModel.connectAndSave(serverAddress, port, shareName, username, password, domain)
     }
 
     private fun confirmDeleteServer() {
@@ -164,17 +167,10 @@ class ConnectActivity : AppCompatActivity() {
             .setTitle(getString(R.string.delete_server_title))
             .setMessage(getString(R.string.delete_server_confirm))
             .setPositiveButton(getString(R.string.delete)) { _, _ ->
-                deleteServer()
+                viewModel.deleteServer()
             }
             .setNegativeButton(getString(R.string.cancel), null)
             .show()
-    }
-
-    private fun deleteServer() {
-        val serverId = editingServerId ?: return
-        serverStorage.deleteServer(serverId)
-        showToast(getString(R.string.deleted))
-        finish()
     }
 
     private fun setLoading(loading: Boolean) {

@@ -2,92 +2,61 @@ package com.tvnas.filebrowser.ui
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ActivityBrowserBinding
 import com.tvnas.filebrowser.install.ApkInstaller
-import com.tvnas.filebrowser.smb.ServerStorage
-import com.tvnas.filebrowser.smb.SmbConnectionManager
 import com.tvnas.filebrowser.smb.SmbFile
+import com.tvnas.filebrowser.ui.viewmodel.BrowserViewModel
 import com.tencent.bugly.crashreport.BuglyLog
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
+import javax.inject.Inject
 
 /**
  * 文件浏览器页面
  */
+@AndroidEntryPoint
 class BrowserActivity : AppCompatActivity() {
+
+    private lateinit var binding: ActivityBrowserBinding
+    private val viewModel: BrowserViewModel by viewModels()
+    private lateinit var adapter: FileAdapter
+
+    @Inject
+    lateinit var thumbnailLoader: ThumbnailLoader
+
+    // 从设置页返回后需要安装的 APK 文件
+    private var pendingInstallFile: SmbFile? = null
+    private var serverId: String? = null
 
     companion object {
         private const val REQUEST_INSTALL_PERMISSION = 1001
     }
-
-    private lateinit var binding: ActivityBrowserBinding
-    private lateinit var adapter: FileAdapter
-    private lateinit var serverStorage: ServerStorage
-    private lateinit var thumbnailLoader: ThumbnailLoader
-
-    // 使用全局共享的连接管理器，跨 Activity 复用连接
-    private val smbManager = SmbConnectionManager.shared
-
-    // 从设置页返回后需要安装的 APK 文件
-    private var pendingInstallFile: SmbFile? = null
-
-    private var serverId: String? = null
-    private var server: String = ""
-    private var port: Int = 445
-    private var share: String = ""
-    private var username: String = ""
-    private var password: String = ""
-    private var domain: String = ""
-
-    private var currentPath: String = ""
-    private val pathStack: ArrayDeque<String> = ArrayDeque()
-
-    // 当前列表加载任务；快速进出目录时取消上一个，避免旧结果覆盖新目录
-    private var loadJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityBrowserBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        serverStorage = ServerStorage(this)
-
-        // 从 serverId 加载配置
-        val id = intent.getStringExtra("serverId")
-        if (id != null) {
-            serverId = id
-            val serverConfig = serverStorage.getServerById(id)
-            if (serverConfig != null) {
-                server = serverConfig.serverAddress
-                port = serverConfig.port
-                share = serverConfig.shareName
-                username = serverConfig.username
-                password = serverConfig.password
-                domain = serverConfig.domain
-            } else {
-                showToast(getString(R.string.server_config_missing))
-                finish()
-                return
-            }
-        } else {
+        serverId = intent.getStringExtra("serverId")
+        if (serverId == null) {
             showToast(getString(R.string.server_config_missing))
             finish()
             return
@@ -95,17 +64,18 @@ class BrowserActivity : AppCompatActivity() {
 
         setupRecyclerView()
         setupClickListeners()
-        connectAndLoadFiles()
+        observeViewModel()
+
+        viewModel.init(serverId!!)
     }
 
     private fun setupClickListeners() {
         binding.btnRefresh.setOnClickListener {
-            loadFiles(currentPath)
+            viewModel.loadFiles(viewModel.currentPath.value)
         }
     }
 
     private fun setupRecyclerView() {
-        thumbnailLoader = ThumbnailLoader(this, smbManager)
         adapter = FileAdapter(
             thumbnailLoader = thumbnailLoader,
             lifecycleScope = lifecycleScope,
@@ -113,73 +83,82 @@ class BrowserActivity : AppCompatActivity() {
             onItemLongClick = { file -> onFileLongClick(file) }
         )
 
-        binding.recyclerView.layoutManager = GridLayoutManager(this, 4)
+        val layoutManager = GridLayoutManager(this, 4)
+        binding.recyclerView.layoutManager = layoutManager
         binding.recyclerView.adapter = adapter
-    }
 
-    private fun connectAndLoadFiles() {
-        binding.progressBar.visibility = View.VISIBLE
+        // 添加分页加载监听
+        binding.recyclerView.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                super.onScrolled(recyclerView, dx, dy)
+                
+                // dy > 0 表示向下滑动；canScrollVertically(1) 兜底 TV 遥控器惯性滚到底部时无 dy 事件
+                if (dy > 0 || !recyclerView.canScrollVertically(1)) {
+                    val visibleItemCount = layoutManager.childCount
+                    val totalItemCount = layoutManager.itemCount
+                    val firstVisibleItemPosition = layoutManager.findFirstVisibleItemPosition()
 
-        lifecycleScope.launch {
-            try {
-                // 已连接到同一服务器时跳过重连（TCP+SMB 认证在电视上耗时数秒）
-                if (!smbManager.isConnectedTo(server, port, share)) {
-                    withContext(Dispatchers.IO) {
-                        smbManager.connect(server, port, share, username, password, domain)
+                    // 提前加载：剩余 2 行（8 个）时开始加载下一页
+                    if ((visibleItemCount + firstVisibleItemPosition) >= totalItemCount - 8) {
+                        viewModel.loadNextPage()
                     }
                 }
-                loadFiles(currentPath)
-            } catch (e: Exception) {
-                binding.progressBar.visibility = View.GONE
-                BuglyLog.e("Browser", "连接并加载文件失败: server=$server:$port, share=$share, path=$currentPath, error=${e.message}")
-                showToast(getString(R.string.connect_failed_detail, e.message ?: ""))
-                finish()
+            }
+        })
+    }
+
+    private fun observeViewModel() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    viewModel.files.collect { files ->
+                        adapter.submitList(files)
+                    }
+                }
+                launch {
+                    viewModel.uiState.collect { state ->
+                        handleUiState(state)
+                    }
+                }
+                launch {
+                    viewModel.currentPath.collect { path ->
+                        updatePathDisplay(path)
+                    }
+                }
+                launch {
+                    viewModel.downloadProgress.collect { state ->
+                        if (state != null) {
+                            showDownloadProgress(state.message, state.progress)
+                        } else {
+                            hideDownloadProgress()
+                        }
+                    }
+                }
+                launch {
+                    viewModel.events.collect { event ->
+                        when (event) {
+                            is BrowserViewModel.BrowserEvent.ShowToast -> showToast(event.message)
+                            is BrowserViewModel.BrowserEvent.StartInstall -> startApkInstall(event.file)
+                        }
+                    }
+                }
             }
         }
     }
 
-    private fun loadFiles(path: String) {
-        // 快速进出目录时取消上一个加载任务，避免旧结果覆盖新目录
-        loadJob?.cancel()
-        binding.progressBar.visibility = View.VISIBLE
+    private fun handleUiState(state: BrowserViewModel.BrowserUiState) {
+        binding.progressBar.visibility = if (state is BrowserViewModel.BrowserUiState.Loading) View.VISIBLE else View.GONE
+        binding.tvEmpty.visibility = if (state is BrowserViewModel.BrowserUiState.Empty) View.VISIBLE else View.GONE
+        binding.recyclerView.visibility = if (state is BrowserViewModel.BrowserUiState.Success) View.VISIBLE else View.GONE
 
-        loadJob = lifecycleScope.launch {
-            try {
-                val files = withContext(Dispatchers.IO) {
-                    smbManager.listFiles(path)
-                }
-
-                currentPath = path
-                adapter.submitList(files)
-
-                if (files.isEmpty()) {
-                    binding.tvEmpty.visibility = View.VISIBLE
-                    binding.recyclerView.visibility = View.GONE
-                } else {
-                    binding.tvEmpty.visibility = View.GONE
-                    binding.recyclerView.visibility = View.VISIBLE
-                }
-
-                updatePathDisplay()
-                binding.tvItemCount.text = getString(R.string.items_count, files.size)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                // 被新 loadFiles 取消，不提示也不上报
-                throw e
-            } catch (e: Exception) {
-                BuglyLog.e("Browser", "加载文件列表失败: server=$server:$port, share=$share, path=$path, error=${e.message}")
-                showToast(getString(R.string.load_failed, e.message ?: ""))
-            } finally {
-                binding.progressBar.visibility = View.GONE
-            }
+        if (state is BrowserViewModel.BrowserUiState.Error) {
+            showToast(state.message)
         }
     }
 
     private fun onFileClick(file: SmbFile) {
         when {
-            file.isDirectory -> {
-                pathStack.addLast(currentPath)
-                loadFiles(file.path)
-            }
+            file.isDirectory -> viewModel.navigateInto(file)
             file.isApk() -> showApkInstallDialog(file)
             file.isViewableImage() -> openImageViewer(file)
             file.isVideo() -> openVideoPlayer(file)
@@ -189,14 +168,12 @@ class BrowserActivity : AppCompatActivity() {
     }
 
     private fun onFileLongClick(file: SmbFile) {
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-        val modifiedDate = dateFormat.format(Date(file.lastModified))
-
         val message = buildString {
             appendLine(getString(R.string.detail_name, file.name))
             appendLine(getString(R.string.detail_path, file.path))
             appendLine(getString(R.string.detail_size, file.formatSize()))
-            appendLine(getString(R.string.detail_modified, modifiedDate))
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            appendLine(getString(R.string.detail_modified, dateFormat.format(Date(file.lastModified))))
             if (!file.isDirectory) {
                 appendLine(getString(R.string.detail_type, file.getExtension()))
             }
@@ -210,14 +187,13 @@ class BrowserActivity : AppCompatActivity() {
     }
 
     private fun showApkInstallDialog(file: SmbFile) {
-        // Android O+ 需要先检查是否有安装未知来源应用的权限
         if (!ApkInstaller.canInstallUnknownApps(this)) {
             pendingInstallFile = file
             AlertDialog.Builder(this)
                 .setTitle(getString(R.string.install_permission_title))
                 .setMessage(getString(R.string.install_permission_message))
                 .setPositiveButton(getString(R.string.go_settings)) { _, _ ->
-                    val intent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
                     intent.data = Uri.parse("package:${packageName}")
                     startActivityForResult(intent, REQUEST_INSTALL_PERMISSION)
                 }
@@ -232,7 +208,7 @@ class BrowserActivity : AppCompatActivity() {
             .setTitle(getString(R.string.install_app_title))
             .setMessage(getString(R.string.install_app_message, file.name, file.formatSize()))
             .setPositiveButton(getString(R.string.download_and_install)) { _, _ ->
-                downloadAndInstallApk(file)
+                viewModel.downloadAndInstallApk(file)
             }
             .setNegativeButton(getString(R.string.cancel), null)
             .show()
@@ -244,78 +220,28 @@ class BrowserActivity : AppCompatActivity() {
             val file = pendingInstallFile
             pendingInstallFile = null
             if (file != null && ApkInstaller.canInstallUnknownApps(this)) {
-                // 用户已授权，继续弹出安装确认对话框
                 showApkInstallDialog(file)
             }
         }
     }
 
-    private fun downloadAndInstallApk(file: SmbFile) {
-        showDownloadProgress(getString(R.string.downloading), 0)
-
-        lifecycleScope.launch {
-            try {
-                val cacheDir = ApkInstaller.getApkCacheDir(this@BrowserActivity)
-                val apkFile = File(cacheDir, file.name)
-
-                withContext(Dispatchers.IO) {
-                    FileOutputStream(apkFile).use { outputStream ->
-                        // 只在整数百分比变化时切回主线程更新 UI，避免每 64KB 一次的
-                        // runOnUiThread 调用刷爆主线程消息队列（大 APK 上万次）
-                        var lastPercent = -1
-                        smbManager.downloadFile(file.path, outputStream) { downloaded, total ->
-                            val percent = if (total > 0) (downloaded * 100 / total).toInt() else 0
-                            if (percent != lastPercent) {
-                                lastPercent = percent
-                                runOnUiThread {
-                                    updateDownloadProgress(getString(R.string.downloading), percent)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // withContext(IO) 结束后，所有 runOnUiThread 已入队
-                // 直接更新 UI 不会有竞态
-                hideDownloadProgress()
-                showToast(getString(R.string.download_start_install))
-
-                val installed = ApkInstaller.installApk(this@BrowserActivity, apkFile)
-
-                if (installed) {
-                    // 使用 ProcessLifecycleOwner 确保 Activity 销毁后仍能清理 APK
-                    ProcessLifecycleOwner.get().lifecycleScope.launch {
-                        delay(30_000)
-                        val deleted = withContext(Dispatchers.IO) { ApkInstaller.deleteApk(apkFile) }
-                        if (!deleted) {
-                            BuglyLog.w("Browser", "安装包删除失败: ${apkFile.name}")
-                            // Activity 可能已销毁，使用 applicationContext 弹提示
-                            Toast.makeText(applicationContext, getString(R.string.apk_delete_failed, apkFile.name), Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                } else {
-                    showToast(getString(R.string.install_failed_check))
-                    if (!ApkInstaller.deleteApk(apkFile)) {
-                        BuglyLog.w("Browser", "安装失败后安装包删除失败: ${apkFile.name}")
-                        showToast(getString(R.string.apk_delete_failed, apkFile.name))
-                    }
-                }
-
-            } catch (e: Exception) {
-                hideDownloadProgress()
-                BuglyLog.e("Browser", "APK 下载失败: ${file.name}, 大小: ${file.formatSize()}, 路径: ${file.path}, error=${e.message}")
-                showToast(getString(R.string.download_failed_detail, e.message ?: ""))
-            }
+    private fun startApkInstall(apkFile: File) {
+        showToast(getString(R.string.download_start_install))
+        val installed = ApkInstaller.installApk(this, apkFile)
+        if (installed) {
+            viewModel.cleanupApk(apkFile)
+        } else {
+            showToast(getString(R.string.install_failed_check))
+            ApkInstaller.deleteApk(apkFile)
         }
     }
 
     private fun openImageViewer(file: SmbFile) {
-        val imageFiles = adapter.currentList.filter { it.isViewableImage() }
+        val allFiles = viewModel.getAllFiles()
+        val imageFiles = allFiles.filter { it.isViewableImage() }
         val currentIndex = imageFiles.indexOfFirst { it.path == file.path }
-
         if (currentIndex == -1) return
 
-        // 只传 serverId，不传密码等敏感信息
         val intent = Intent(this, ImageViewerActivity::class.java).apply {
             putExtra("serverId", serverId)
             putExtra("currentIndex", currentIndex)
@@ -324,13 +250,10 @@ class BrowserActivity : AppCompatActivity() {
         startActivity(intent)
     }
 
-    /**
-     * 打开视频播放器（流式播放，与 ImageViewer 传参方式一致）
-     */
     private fun openVideoPlayer(file: SmbFile) {
-        val videoFiles = adapter.currentList.filter { it.isVideo() }
+        val allFiles = viewModel.getAllFiles()
+        val videoFiles = allFiles.filter { it.isVideo() }
         val currentIndex = videoFiles.indexOfFirst { it.path == file.path }
-
         if (currentIndex == -1) return
 
         val intent = Intent(this, VideoPlayerActivity::class.java).apply {
@@ -347,23 +270,19 @@ class BrowserActivity : AppCompatActivity() {
         binding.downloadProgressBar.progress = progress
     }
 
-    private fun updateDownloadProgress(message: String, progress: Int) {
-        binding.tvDownloadStatus.text = message
-        binding.downloadProgressBar.progress = progress
-    }
-
     private fun hideDownloadProgress() {
         binding.layoutDownloadProgress.visibility = View.GONE
     }
 
-    private fun updatePathDisplay() {
+    private fun updatePathDisplay(currentPath: String) {
         val displayPath = if (currentPath.isEmpty()) {
-            "smb://$server/$share/"
+            "smb://${viewModel.serverHost}/${viewModel.shareName}/"
         } else {
-            "smb://$server/$share/${currentPath.replace("\\", "/")}"
+            "smb://${viewModel.serverHost}/${viewModel.shareName}/${currentPath.replace("\\", "/")}"
         }
         binding.tvPath.text = displayPath
-        binding.tvServerInfo.text = "$server:$port"
+        binding.tvServerInfo.text = "${viewModel.serverHost}:${viewModel.serverPort}"
+        binding.tvItemCount.text = getString(R.string.items_count, viewModel.getAllFiles().size)
     }
 
     private fun showToast(message: String) {
@@ -373,16 +292,14 @@ class BrowserActivity : AppCompatActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         return when (keyCode) {
             KeyEvent.KEYCODE_BACK -> {
-                if (pathStack.isNotEmpty()) {
-                    val previousPath = pathStack.removeLast()
-                    loadFiles(previousPath)
+                if (viewModel.navigateBack()) {
                     true
                 } else {
                     super.onKeyDown(keyCode, event)
                 }
             }
             KeyEvent.KEYCODE_MENU -> {
-                loadFiles(currentPath)
+                viewModel.loadFiles(viewModel.currentPath.value)
                 true
             }
             else -> super.onKeyDown(keyCode, event)
@@ -394,6 +311,5 @@ class BrowserActivity : AppCompatActivity() {
         if (::thumbnailLoader.isInitialized) {
             thumbnailLoader.clearMemoryCache()
         }
-        // 不断开共享连接 — 其他 Activity（如 ImageViewerActivity）可能还在使用
     }
 }

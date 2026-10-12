@@ -4,27 +4,28 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
+import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ActivityServerListBinding
 import com.tvnas.filebrowser.smb.ServerConfig
-import com.tvnas.filebrowser.smb.ServerStorage
-import com.tvnas.filebrowser.smb.SmbConnectionManager
-import com.tvnas.filebrowser.util.CacheManager
-import kotlinx.coroutines.Dispatchers
+import com.tvnas.filebrowser.ui.viewmodel.ServerListViewModel
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * 服务器列表页面
  */
+@AndroidEntryPoint
 class ServerListActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityServerListBinding
-    private lateinit var serverStorage: ServerStorage
+    private val viewModel: ServerListViewModel by viewModels()
     private lateinit var adapter: ServerListAdapter
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,15 +33,14 @@ class ServerListActivity : AppCompatActivity() {
         binding = ActivityServerListBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        serverStorage = ServerStorage(this)
         setupRecyclerView()
         setupClickListeners()
+        observeViewModel()
     }
 
     override fun onResume() {
         super.onResume()
-        loadServers()
-        updateCacheSize()
+        viewModel.updateCacheSize()
     }
 
     private fun setupRecyclerView() {
@@ -65,16 +65,29 @@ class ServerListActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadServers() {
-        val servers = serverStorage.getServers()
-        adapter.submitList(servers)
-
-        if (servers.isEmpty()) {
-            binding.tvEmpty.visibility = View.VISIBLE
-            binding.recyclerView.visibility = View.GONE
-        } else {
-            binding.tvEmpty.visibility = View.GONE
-            binding.recyclerView.visibility = View.VISIBLE
+    private fun observeViewModel() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    viewModel.servers.collect { servers ->
+                        adapter.submitList(servers)
+                        binding.tvEmpty.visibility = if (servers.isEmpty()) View.VISIBLE else View.GONE
+                        binding.recyclerView.visibility = if (servers.isEmpty()) View.GONE else View.VISIBLE
+                    }
+                }
+                launch {
+                    viewModel.cacheSize.collect { size ->
+                        binding.tvCacheSize.text = getString(R.string.cache_label, size)
+                    }
+                }
+                launch {
+                    viewModel.events.collect { event ->
+                        when (event) {
+                            is ServerListViewModel.UiEvent.ShowToast -> showToast(event.message)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -97,52 +110,28 @@ class ServerListActivity : AppCompatActivity() {
             .setTitle(getString(R.string.delete_server_title))
             .setMessage(getString(R.string.delete_server_confirm, server.getDisplayName()))
             .setPositiveButton(getString(R.string.delete)) { _, _ ->
-                serverStorage.deleteServer(server.id)
-                loadServers()
-                showToast(getString(R.string.deleted))
+                viewModel.deleteServer(server)
             }
             .setNegativeButton(getString(R.string.cancel), null)
             .show()
     }
 
-    private fun updateCacheSize() {
-        val cacheSize = CacheManager.getFormattedCacheSize(this)
-        binding.tvCacheSize.text = getString(R.string.cache_label, cacheSize)
-    }
-
     private fun showClearCacheConfirmation() {
-        val cacheSize = CacheManager.getFormattedCacheSize(this)
+        val cacheSize = binding.tvCacheSize.text.toString().substringAfter(": ")
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.clear_cache))
             .setMessage(getString(R.string.clear_cache_message, cacheSize))
             .setPositiveButton(getString(R.string.clear_cache)) { _, _ ->
-                clearCache()
+                viewModel.clearCache()
             }
             .setNegativeButton(getString(R.string.cancel), null)
             .show()
     }
 
-    private fun clearCache() {
-        binding.btnClearCache.isEnabled = false
-        binding.btnClearCache.text = getString(R.string.deleting)
-
-        lifecycleScope.launch {
-            val count = withContext(Dispatchers.IO) {
-                CacheManager.clearCache(this@ServerListActivity)
-            }
-
-            updateCacheSize()
-            binding.btnClearCache.isEnabled = true
-            binding.btnClearCache.text = getString(R.string.clear_cache)
-            showToast(getString(R.string.cleared_files, count))
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
-        // 仅在 Activity 真正被销毁（非配置变更）时断开共享连接
         if (isFinishing) {
-            SmbConnectionManager.shared.disconnect()
+            viewModel.disconnectIfFinishing()
         }
     }
 
