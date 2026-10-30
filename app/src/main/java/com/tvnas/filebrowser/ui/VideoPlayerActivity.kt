@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
  * 视频播放器 - 全屏播放，从 SMB 共享流式读取
  */
 @AndroidEntryPoint
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class VideoPlayerActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityVideoPlayerBinding
@@ -70,6 +71,7 @@ class VideoPlayerActivity : AppCompatActivity() {
         viewModel.init(serverId, currentIndex, videoFiles)
     }
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun initializePlayer() {
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(30_000, 120_000, 5_000, 10_000)
@@ -235,6 +237,53 @@ class VideoPlayerActivity : AppCompatActivity() {
                     showInfoBars()
                 }
                 false
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                player?.let {
+                    if (it.isPlaying) it.pause() else it.play()
+                    showInfoBars()
+                }
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                player?.play()
+                showInfoBars()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                player?.pause()
+                showInfoBars()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                player?.let { p ->
+                    if (p.duration > 0) {
+                        val newPos = (p.currentPosition + 10_000L).coerceAtMost(p.duration)
+                        p.seekTo(newPos)
+                        showInfoBars()
+                    }
+                }
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                player?.let { p ->
+                    val newPos = (p.currentPosition - 10_000L).coerceAtLeast(0L)
+                    p.seekTo(newPos)
+                    showInfoBars()
+                }
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                viewModel.playNext()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                viewModel.playPrevious()
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_STOP -> {
+                finish()
+                true
             }
             KeyEvent.KEYCODE_MENU -> { showInfoBars(); true }
             KeyEvent.KEYCODE_BACK -> { finish(); true }

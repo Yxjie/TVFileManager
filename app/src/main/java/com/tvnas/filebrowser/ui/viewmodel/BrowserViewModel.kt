@@ -52,7 +52,29 @@ class BrowserViewModel @Inject constructor(
     val events = _events.asSharedFlow()
 
     private val pathStack = ArrayDeque<String>()
+    // 记忆每个目录路径下最后焦点的文件路径 (directoryPath -> lastFocusedFilePath)
+    private val pathFocusMap = mutableMapOf<String, String>()
+    // 记忆每个目录路径下最后焦点的索引位置 (directoryPath -> lastFocusedIndex)
+    private val pathFocusIndexMap = mutableMapOf<String, Int>()
     private var loadJob: Job? = null
+
+    // 目录整表加载代次：仅 loadFiles 递增，loadNextPage 追加分页不递增。
+    // 页面据此区分「切换目录」与「分页追加」，避免后者重复抢焦点。
+    private var _loadGeneration = 0
+    val loadGeneration: Int get() = _loadGeneration
+
+    fun saveFocusPosition(directoryPath: String, filePath: String, position: Int = -1) {
+        if (filePath.isNotEmpty()) {
+            pathFocusMap[directoryPath] = filePath
+            if (position >= 0) {
+                pathFocusIndexMap[directoryPath] = position
+            }
+        }
+    }
+
+    fun getSavedFocusPath(directoryPath: String): String? = pathFocusMap[directoryPath]
+
+    fun getSavedFocusIndex(directoryPath: String): Int = pathFocusIndexMap[directoryPath] ?: -1
     
     var serverHost: String = ""
         private set
@@ -98,8 +120,23 @@ class BrowserViewModel @Inject constructor(
                 // 初始化分页状态
                 allFilesMaster = result
                 
-                // 仅下发第一页数据
-                val initialPage = result.take(PAGE_SIZE)
+                // 检查是否有记忆的焦点条目（路径或索引），如位于后几页（即使已删）也自动调大初始加载页数
+                val targetFocusPath = pathFocusMap[path]
+                val pathIndex = if (targetFocusPath != null) {
+                    result.indexOfFirst { it.path == targetFocusPath }
+                } else -1
+                val savedIndex = pathFocusIndexMap[path] ?: -1
+
+                val maxTargetIndex = maxOf(pathIndex, savedIndex)
+
+                val initialCount = if (maxTargetIndex >= PAGE_SIZE) {
+                    minOf(((maxTargetIndex / PAGE_SIZE) + 1) * PAGE_SIZE, result.size)
+                } else {
+                    minOf(PAGE_SIZE, result.size)
+                }
+
+                val initialPage = result.take(initialCount)
+                _loadGeneration++
                 _files.value = initialPage
                 
                 _uiState.value = if (result.isEmpty()) BrowserUiState.Empty else BrowserUiState.Success
@@ -109,6 +146,16 @@ class BrowserViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * 手动刷新当前目录：清空该目录的历史焦点记忆，重新加载
+     */
+    fun refreshCurrentDirectory() {
+        val path = _currentPath.value
+        pathFocusMap.remove(path)
+        pathFocusIndexMap.remove(path)
+        loadFiles(path)
     }
 
     /**
@@ -129,6 +176,7 @@ class BrowserViewModel @Inject constructor(
     }
 
     fun navigateInto(file: SmbFile) {
+        pathFocusMap[_currentPath.value] = file.path
         pathStack.addLast(_currentPath.value)
         loadFiles(file.path)
     }
@@ -139,6 +187,20 @@ class BrowserViewModel @Inject constructor(
             return true
         }
         return false
+    }
+
+    fun deleteFile(file: SmbFile) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    smbManager.delete(file.path)
+                }
+                _events.emit(BrowserEvent.ShowToast("已删除 ${file.name}"))
+                loadFiles(_currentPath.value)
+            } catch (e: Exception) {
+                _events.emit(BrowserEvent.ShowToast("删除失败: ${e.message}"))
+            }
+        }
     }
 
     fun downloadAndInstallApk(file: SmbFile) {

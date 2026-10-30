@@ -257,6 +257,21 @@ class SmbConnectionManager {
     }
 
     /**
+     * 删除 SMB 服务器上的文件或文件夹
+     * 仅调用 ensureShare() 获取句柄，网络 IO（folderExists/rmdir/rm）在锁外执行，
+     * 避免大目录递归删除长时间阻塞全局锁引发 ANR
+     */
+    @Throws(Exception::class)
+    fun delete(remotePath: String) {
+        val share = ensureShare()
+        if (share.folderExists(remotePath)) {
+            share.rmdir(remotePath, true)
+        } else {
+            share.rm(remotePath)
+        }
+    }
+
+    /**
      * 打开文件用于流式读取（用于 ExoPlayer 等媒体播放器）
      *
      * 返回 SmbStreamHandle，调用者负责在使用完毕后调用 handle.close() 释放资源。

@@ -43,7 +43,11 @@ class ImageViewerViewModel @Inject constructor(
 
     private var imageFiles: List<SmbFile> = emptyList()
     private var loadJob: Job? = null
+    private var preloadJob: Job? = null
     private var slideshowJob: Job? = null
+
+    // 内存预加载缓存 (index -> Bitmap)，仅维护 [currentIndex - 1, currentIndex, currentIndex + 1] 三张图片
+    private val bitmapCache = HashMap<Int, Bitmap>()
 
     companion object {
         private const val SLIDESHOW_INTERVAL_MS = 5_000L
@@ -69,36 +73,30 @@ class ImageViewerViewModel @Inject constructor(
         val file = imageFiles[index]
 
         loadJob?.cancel()
+
+        // 检查预加载缓存
+        val cachedBitmap = synchronized(bitmapCache) { bitmapCache[index] }
+        if (cachedBitmap != null) {
+            _uiState.value = ImageUiState.Success(cachedBitmap, file.name, index, imageFiles.size)
+            triggerPreload(index)
+            if (_isSlideshowOn.value) scheduleNextSlide()
+            return
+        }
+
         _uiState.value = ImageUiState.Loading(file.name, index, imageFiles.size)
 
         loadJob = viewModelScope.launch {
-            var bytesStreamed = 0L
             try {
-                val bitmap = withContext(Dispatchers.IO) {
-                    val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    smbManager.openInputStream(file.path).use { raw ->
-                        BitmapFactory.decodeStream(
-                            CountingInputStream(BufferedInputStream(raw)) { bytesStreamed += it },
-                            null, boundsOptions
-                        )
+                val result = decodeBitmapFromSmb(file)
+                if (result.bitmap != null) {
+                    synchronized(bitmapCache) {
+                        bitmapCache[index] = result.bitmap
                     }
-                    if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) return@withContext null
-
-                    val sampleSize = BitmapSampler.calculateInSampleSize(boundsOptions, screenWidth, screenHeight)
-                    val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                    smbManager.openInputStream(file.path).use { raw ->
-                        BitmapFactory.decodeStream(
-                            CountingInputStream(BufferedInputStream(raw)) { bytesStreamed += it },
-                            null, decodeOptions
-                        )
-                    }
-                }
-
-                if (bitmap != null) {
-                    _uiState.value = ImageUiState.Success(bitmap)
+                    _uiState.value = ImageUiState.Success(result.bitmap, file.name, index, imageFiles.size)
+                    triggerPreload(index)
                 } else {
-                    val reason = if (file.size > 0 && bytesStreamed in 1 until file.size) {
-                        "读取不完整(${bytesStreamed}/${file.size}字节)"
+                    val reason = if (file.size > 0 && result.bytesStreamed in 1 until file.size) {
+                        "读取不完整(${result.bytesStreamed}/${file.size}字节)"
                     } else "解码返回 null"
                     BuglyLog.e("ImageViewer", "图片预览失败: $reason, 文件=${file.name}")
                     _uiState.value = ImageUiState.Error("图片加载失败")
@@ -112,6 +110,68 @@ class ImageViewerViewModel @Inject constructor(
                 if (_isSlideshowOn.value) scheduleNextSlide()
             }
         }
+    }
+
+    /**
+     * 触发前后一张图片的后台预加载，并淘汰不在 [currentIndex-1, currentIndex, currentIndex+1] 范围内的缓存
+     */
+    private fun triggerPreload(currentIndex: Int) {
+        preloadJob?.cancel()
+        preloadJob = viewModelScope.launch(Dispatchers.IO) {
+            // 清理过期缓存
+            val validIndices = setOf(currentIndex - 1, currentIndex, currentIndex + 1)
+            synchronized(bitmapCache) {
+                bitmapCache.keys.retainAll(validIndices)
+            }
+
+            // 优先预加载下一张（用户正向浏览更普遍），再预加载上一张
+            val preloadTargets = listOf(currentIndex + 1, currentIndex - 1)
+            for (targetIndex in preloadTargets) {
+                if (targetIndex !in 0 until imageFiles.size) continue
+                if (synchronized(bitmapCache) { bitmapCache.containsKey(targetIndex) }) continue
+
+                val targetFile = imageFiles[targetIndex]
+                try {
+                    val bitmap = decodeBitmapFromSmb(targetFile).bitmap
+                    if (bitmap != null) {
+                        synchronized(bitmapCache) {
+                            if (targetIndex in setOf(_currentIndex.value - 1, _currentIndex.value, _currentIndex.value + 1)) {
+                                bitmapCache[targetIndex] = bitmap
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    // 预加载失败可静默忽略，用户切到该页时会通过 startLoad 走正常加载与报错流程
+                }
+            }
+        }
+    }
+
+    private data class DecodeResult(val bitmap: Bitmap?, val bytesStreamed: Long)
+
+    private suspend fun decodeBitmapFromSmb(file: SmbFile): DecodeResult = withContext(Dispatchers.IO) {
+        var bytesStreamed = 0L
+        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        smbManager.openInputStream(file.path).use { raw ->
+            BitmapFactory.decodeStream(
+                CountingInputStream(BufferedInputStream(raw)) { bytesStreamed += it },
+                null, boundsOptions
+            )
+        }
+        if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) {
+            return@withContext DecodeResult(null, bytesStreamed)
+        }
+
+        val sampleSize = BitmapSampler.calculateInSampleSize(boundsOptions, screenWidth, screenHeight)
+        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val bitmap = smbManager.openInputStream(file.path).use { raw ->
+            BitmapFactory.decodeStream(
+                CountingInputStream(BufferedInputStream(raw)) { bytesStreamed += it },
+                null, decodeOptions
+            )
+        }
+        DecodeResult(bitmap, bytesStreamed)
     }
 
     fun toggleSlideshow() {
@@ -158,13 +218,17 @@ class ImageViewerViewModel @Inject constructor(
 
     fun cancelPendingJobs() {
         loadJob?.cancel()
+        preloadJob?.cancel()
         slideshowJob?.cancel()
+        synchronized(bitmapCache) {
+            bitmapCache.clear()
+        }
     }
 
     sealed class ImageUiState {
         object Idle : ImageUiState()
         data class Loading(val name: String, val index: Int, val total: Int) : ImageUiState()
-        data class Success(val bitmap: Bitmap) : ImageUiState()
+        data class Success(val bitmap: Bitmap, val name: String, val index: Int, val total: Int) : ImageUiState()
         data class Error(val message: String) : ImageUiState()
     }
 

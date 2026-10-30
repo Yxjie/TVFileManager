@@ -120,7 +120,45 @@ class ThumbnailLoader(
                 val read = handle.read(buffer, 0, 0, cap)
                 if (read <= 0) return null
                 val exif = ExifInterface(ByteArrayInputStream(buffer, 0, read))
-                exif.thumbnail?.let { raw -> decodeByteArray(raw) }
+                val rawThumb = exif.thumbnail ?: return null
+
+                var bitmap = decodeByteArray(rawThumb) ?: return null
+
+                // 1. 纠正 EXIF 旋转（修复竖拍照片 EXIF 缩略图未旋转导致预览图与大图方向不符的问题）
+                val orientation = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_UNDEFINED
+                )
+                val degrees = when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                    else -> 0f
+                }
+                if (degrees != 0f) {
+                    val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
+                    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                    if (rotated != bitmap) {
+                        bitmap.recycle()
+                        bitmap = rotated
+                    }
+                }
+
+                // 2. 宽高比校验：如果照片被编辑/裁剪过，旧 EXIF 缩略图比例与原图差异过大时弃用并降级重解整图
+                val imageWidth = exif.getAttributeInt(ExifInterface.TAG_IMAGE_WIDTH, 0)
+                val imageHeight = exif.getAttributeInt(ExifInterface.TAG_IMAGE_LENGTH, 0)
+                if (imageWidth > 0 && imageHeight > 0) {
+                    val mainAspect = imageWidth.toFloat() / imageHeight
+                    val thumbAspect = bitmap.width.toFloat() / bitmap.height
+                    // 允许 15% 比例误差，超过说明 EXIF 缩略图已过时/裁剪不匹配
+                    if (kotlin.math.abs(mainAspect - thumbAspect) > 0.15f &&
+                        kotlin.math.abs(mainAspect - (1f / thumbAspect)) > 0.15f) {
+                        bitmap.recycle()
+                        return null
+                    }
+                }
+
+                bitmap
             } finally {
                 runCatching { handle.close() }
             }

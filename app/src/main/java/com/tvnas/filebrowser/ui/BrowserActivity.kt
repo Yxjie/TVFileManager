@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -20,6 +21,7 @@ import com.tvnas.filebrowser.databinding.ActivityBrowserBinding
 import com.tvnas.filebrowser.install.ApkInstaller
 import com.tvnas.filebrowser.smb.SmbFile
 import com.tvnas.filebrowser.ui.viewmodel.BrowserViewModel
+import com.tvnas.filebrowser.util.FocusHelper
 import com.tencent.bugly.crashreport.BuglyLog
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
@@ -46,6 +48,30 @@ class BrowserActivity : AppCompatActivity() {
     private var pendingInstallFile: SmbFile? = null
     private var serverId: String? = null
 
+    // 最近一次已恢复焦点的加载代次，用于避免分页追加数据时重复抢焦点
+    private var lastRestoredGeneration = -1
+
+    // 标志位：恢复焦点期间忽略系统框架自动分发的 Item 0 误触事件，防止覆盖真实记忆焦点
+    private var isRestoringFocus = false
+
+    private val imageViewerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            val lastIndex = result.data?.getIntExtra("currentIndex", -1) ?: -1
+            val currentPath = viewModel.currentPath.value
+            val allFiles = viewModel.getAllFiles()
+            val imageFiles = allFiles.filter { it.isViewableImage() }
+            if (lastIndex in imageFiles.indices) {
+                val lastImage = imageFiles[lastIndex]
+                val masterIndex = allFiles.indexOfFirst { it.path == lastImage.path }
+                if (masterIndex != -1) {
+                    viewModel.saveFocusPosition(currentPath, lastImage.path, masterIndex)
+                }
+            }
+        }
+    }
+
     companion object {
         private const val REQUEST_INSTALL_PERMISSION = 1001
     }
@@ -71,7 +97,7 @@ class BrowserActivity : AppCompatActivity() {
 
     private fun setupClickListeners() {
         binding.btnRefresh.setOnClickListener {
-            viewModel.loadFiles(viewModel.currentPath.value)
+            viewModel.refreshCurrentDirectory()
         }
     }
 
@@ -80,7 +106,12 @@ class BrowserActivity : AppCompatActivity() {
             thumbnailLoader = thumbnailLoader,
             lifecycleScope = lifecycleScope,
             onItemClick = { file -> onFileClick(file) },
-            onItemLongClick = { file -> onFileLongClick(file) }
+            onItemLongClick = { file -> onFileLongClick(file) },
+            onItemFocused = { file, pos ->
+                if (!isRestoringFocus) {
+                    viewModel.saveFocusPosition(viewModel.currentPath.value, file.path, pos)
+                }
+            }
         )
 
         val layoutManager = GridLayoutManager(this, 4)
@@ -112,7 +143,9 @@ class BrowserActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     viewModel.files.collect { files ->
-                        adapter.submitList(files)
+                        adapter.submitList(files) {
+                            restoreFocusToSavedItem(force = false)
+                        }
                     }
                 }
                 launch {
@@ -183,6 +216,26 @@ class BrowserActivity : AppCompatActivity() {
             .setTitle(getString(R.string.file_details))
             .setMessage(message)
             .setPositiveButton(getString(R.string.confirm), null)
+            .setNegativeButton(getString(R.string.delete)) { _, _ ->
+                confirmDeleteFile(file)
+            }
+            .show()
+    }
+
+    private fun confirmDeleteFile(file: SmbFile) {
+        val message = if (file.isDirectory) {
+            getString(R.string.delete_folder_confirm, file.name)
+        } else {
+            getString(R.string.delete_file_confirm, file.name)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.delete))
+            .setMessage(message)
+            .setPositiveButton(getString(R.string.delete)) { _, _ ->
+                viewModel.deleteFile(file)
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
             .show()
     }
 
@@ -242,12 +295,17 @@ class BrowserActivity : AppCompatActivity() {
         val currentIndex = imageFiles.indexOfFirst { it.path == file.path }
         if (currentIndex == -1) return
 
+        val masterIndex = allFiles.indexOfFirst { it.path == file.path }
+        if (masterIndex != -1) {
+            viewModel.saveFocusPosition(viewModel.currentPath.value, file.path, masterIndex)
+        }
+
         val intent = Intent(this, ImageViewerActivity::class.java).apply {
             putExtra("serverId", serverId)
             putExtra("currentIndex", currentIndex)
             putParcelableArrayListExtra("imageFiles", ArrayList(imageFiles))
         }
-        startActivity(intent)
+        imageViewerLauncher.launch(intent)
     }
 
     private fun openVideoPlayer(file: SmbFile) {
@@ -255,6 +313,11 @@ class BrowserActivity : AppCompatActivity() {
         val videoFiles = allFiles.filter { it.isVideo() }
         val currentIndex = videoFiles.indexOfFirst { it.path == file.path }
         if (currentIndex == -1) return
+
+        val masterIndex = allFiles.indexOfFirst { it.path == file.path }
+        if (masterIndex != -1) {
+            viewModel.saveFocusPosition(viewModel.currentPath.value, file.path, masterIndex)
+        }
 
         val intent = Intent(this, VideoPlayerActivity::class.java).apply {
             putExtra("serverId", serverId)
@@ -299,10 +362,53 @@ class BrowserActivity : AppCompatActivity() {
                 }
             }
             KeyEvent.KEYCODE_MENU -> {
-                viewModel.loadFiles(viewModel.currentPath.value)
+                viewModel.refreshCurrentDirectory()
                 true
             }
             else -> super.onKeyDown(keyCode, event)
+        }
+    }
+
+    private fun restoreFocusToSavedItem(force: Boolean = false) {
+        if (adapter.itemCount == 0) return
+
+        // 非强制场景（分页追加、DiffUtil 局部刷新等）仅在同目录整表加载时恢复一次，
+        // 避免用户滚动触发 loadNextPage 追加数据时焦点被强行拉回
+        val generation = viewModel.loadGeneration
+        if (!force) {
+            if (generation == lastRestoredGeneration) return
+        }
+        lastRestoredGeneration = generation
+
+        val currentPath = viewModel.currentPath.value
+        val targetPath = viewModel.getSavedFocusPath(currentPath)
+        val savedIndex = viewModel.getSavedFocusIndex(currentPath)
+
+        // 若原条目已不存在（如被删除），退而求其次定位到离它最近的相邻位置
+        val targetPosition = if (targetPath != null) {
+            val pos = adapter.currentList.indexOfFirst { it.path == targetPath }
+            if (pos != -1) {
+                pos
+            } else if (savedIndex >= 0) {
+                savedIndex.coerceAtMost(adapter.currentList.size - 1)
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+
+        isRestoringFocus = true
+        binding.recyclerView.post {
+            FocusHelper.restoreAndRequestFocus(binding.recyclerView, targetPosition, this)
+            binding.recyclerView.postDelayed({ isRestoringFocus = false }, 200)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::adapter.isInitialized && adapter.itemCount > 0) {
+            restoreFocusToSavedItem(force = true)
         }
     }
 

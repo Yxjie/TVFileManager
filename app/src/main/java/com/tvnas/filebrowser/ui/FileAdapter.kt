@@ -23,7 +23,8 @@ class FileAdapter(
     private val thumbnailLoader: ThumbnailLoader?,
     private val lifecycleScope: CoroutineScope,
     private val onItemClick: (SmbFile) -> Unit,
-    private val onItemLongClick: (SmbFile) -> Unit
+    private val onItemLongClick: (SmbFile) -> Unit,
+    private val onItemFocused: ((SmbFile, Int) -> Unit)? = null
 ) : ListAdapter<SmbFile, FileAdapter.ViewHolder>(FileDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -47,6 +48,10 @@ class FileAdapter(
 
             val iconRes = getFileIconRes(file)
             val isVideo = file.isVideo()
+
+            // 清理复用的 ViewHolder 旧请求与残留图片，立刻重置为默认图标
+            Glide.with(binding.root.context).clear(binding.ivIcon)
+            binding.ivIcon.setImageResource(iconRes)
 
             // 角标默认隐藏（ViewHolder 复用，必须每次 bind 重置）：
             // 仅"视频 + 缩略图加载成功"时在下方异步回调里置为可见
@@ -108,6 +113,14 @@ class FileAdapter(
             binding.root.setOnLongClickListener {
                 onItemLongClick(file)
                 true
+            }
+            binding.root.setOnFocusChangeListener { _, hasFocus ->
+                if (hasFocus && bindingAdapterPosition != RecyclerView.NO_POSITION) {
+                    val pos = bindingAdapterPosition
+                    getItemOrNull(pos)?.let { currentFile ->
+                        onItemFocused?.invoke(currentFile, pos)
+                    }
+                }
             }
         }
 

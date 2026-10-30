@@ -15,6 +15,7 @@ import com.tvnas.filebrowser.R
 import com.tvnas.filebrowser.databinding.ActivityServerListBinding
 import com.tvnas.filebrowser.smb.ServerConfig
 import com.tvnas.filebrowser.ui.viewmodel.ServerListViewModel
+import com.tvnas.filebrowser.util.FocusHelper
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 
@@ -27,6 +28,8 @@ class ServerListActivity : AppCompatActivity() {
     private lateinit var binding: ActivityServerListBinding
     private val viewModel: ServerListViewModel by viewModels()
     private lateinit var adapter: ServerListAdapter
+
+    private var lastFocusedServerId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,13 +44,22 @@ class ServerListActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.updateCacheSize()
+        if (::adapter.isInitialized && adapter.itemCount > 0) {
+            restoreFocusToSavedServer()
+        }
     }
 
     private fun setupRecyclerView() {
         adapter = ServerListAdapter(
-            onItemClick = { server -> connectToServer(server) },
-            onItemEditClick = { server -> editServer(server) },
-            onItemDeleteClick = { server -> confirmDeleteServer(server) }
+            onItemClick = { server ->
+                lastFocusedServerId = server.id
+                connectToServer(server)
+            },
+            onItemLongClick = { server ->
+                lastFocusedServerId = server.id
+                showServerActionMenu(server)
+            },
+            onItemFocused = { server -> lastFocusedServerId = server.id }
         )
 
         binding.recyclerView.layoutManager = LinearLayoutManager(this)
@@ -70,7 +82,9 @@ class ServerListActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     viewModel.servers.collect { servers ->
-                        adapter.submitList(servers)
+                        adapter.submitList(servers) {
+                            restoreFocusToSavedServer()
+                        }
                         binding.tvEmpty.visibility = if (servers.isEmpty()) View.VISIBLE else View.GONE
                         binding.recyclerView.visibility = if (servers.isEmpty()) View.GONE else View.VISIBLE
                     }
@@ -98,6 +112,24 @@ class ServerListActivity : AppCompatActivity() {
         startActivity(intent)
     }
 
+    private fun showServerActionMenu(server: ServerConfig) {
+        val options = arrayOf(
+            getString(R.string.connect),
+            getString(R.string.edit_server),
+            getString(R.string.delete)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(server.getDisplayName())
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> connectToServer(server)
+                    1 -> editServer(server)
+                    2 -> confirmDeleteServer(server)
+                }
+            }
+            .show()
+    }
+
     private fun editServer(server: ServerConfig) {
         val intent = Intent(this, ConnectActivity::class.java).apply {
             putExtra("serverId", server.id)
@@ -110,6 +142,14 @@ class ServerListActivity : AppCompatActivity() {
             .setTitle(getString(R.string.delete_server_title))
             .setMessage(getString(R.string.delete_server_confirm, server.getDisplayName()))
             .setPositiveButton(getString(R.string.delete)) { _, _ ->
+                val currentList = adapter.currentList
+                val deletedIndex = currentList.indexOfFirst { it.id == server.id }
+                if (deletedIndex != -1 && currentList.size > 1) {
+                    val nextIndex = if (deletedIndex < currentList.size - 1) deletedIndex + 1 else deletedIndex - 1
+                    lastFocusedServerId = currentList[nextIndex].id
+                } else {
+                    lastFocusedServerId = null
+                }
                 viewModel.deleteServer(server)
             }
             .setNegativeButton(getString(R.string.cancel), null)
@@ -126,6 +166,21 @@ class ServerListActivity : AppCompatActivity() {
             }
             .setNegativeButton(getString(R.string.cancel), null)
             .show()
+    }
+
+    private fun restoreFocusToSavedServer() {
+        if (adapter.itemCount == 0) return
+        val targetId = lastFocusedServerId
+        val position = if (targetId != null) {
+            val pos = adapter.currentList.indexOfFirst { it.id == targetId }
+            if (pos != -1) pos else 0
+        } else {
+            0
+        }
+
+        binding.recyclerView.post {
+            FocusHelper.restoreAndRequestFocus(binding.recyclerView, position, this)
+        }
     }
 
     override fun onDestroy() {

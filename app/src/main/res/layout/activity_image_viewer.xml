@@ -73,7 +73,8 @@
             android:paddingVertical="10dp"
             android:text="@string/slideshow_start"
             android:textColor="@android:color/white"
-            android:textSize="16sp" />
+            android:textSize="16sp"
+            android:stateListAnimator="@animator/item_scale" />
 
     </LinearLayout>
 

@@ -42,7 +42,8 @@
             android:contentDescription="刷新"
             android:focusable="true"
             android:clickable="true"
-            android:background="@drawable/item_bg" />
+            android:background="@drawable/item_bg"
+            android:stateListAnimator="@animator/item_scale" />
 
     </LinearLayout>
 

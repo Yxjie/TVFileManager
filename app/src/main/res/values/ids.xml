@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="focus_helper_listener" type="id" />
+    <item name="focus_helper_runnable" type="id" />
+</resources>

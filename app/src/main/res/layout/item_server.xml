@@ -55,29 +55,11 @@
 
     </LinearLayout>
 
-    <!-- Edit Button -->
-    <ImageView
-        android:id="@+id/btnEdit"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:padding="8dp"
-        android:src="@drawable/ic_edit"
-        android:contentDescription="编辑"
-        android:focusable="true"
-        android:clickable="true"
-        android:background="@drawable/item_bg" />
-
-    <!-- Delete Button -->
-    <ImageView
-        android:id="@+id/btnDelete"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:padding="8dp"
-        android:src="@drawable/ic_delete"
-        android:contentDescription="删除"
-        android:focusable="true"
-        android:clickable="true"
-        android:layout_marginStart="8dp"
-        android:background="@drawable/item_bg" />
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/hint_long_press_action"
+        android:textColor="#60FFFFFF"
+        android:textSize="12sp" />
 
 </LinearLayout>

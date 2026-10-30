@@ -10,3 +10,5 @@ local.properties
 .DS_Store
 tvmanage.jks
 keystore.properties
+.claude/
+

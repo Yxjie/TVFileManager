@@ -195,9 +195,11 @@
             android:text="连接服务器"
             android:textSize="16sp"
             android:textStyle="bold"
-            app:backgroundTint="#6495ED"
+            app:backgroundTint="@null"
+            android:background="@drawable/btn_accent_bg"
             app:cornerRadius="8dp"
-            android:layout_marginBottom="16dp" />
+            android:layout_marginBottom="16dp"
+            android:stateListAnimator="@animator/item_scale" />
 
         <!-- Button Row: Cancel + Delete -->
         <LinearLayout
@@ -216,7 +218,8 @@
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 app:strokeColor="#6495ED"
                 app:cornerRadius="8dp"
-                android:layout_marginEnd="8dp" />
+                android:layout_marginEnd="8dp"
+                android:stateListAnimator="@animator/item_scale" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnDelete"
@@ -229,7 +232,8 @@
                 app:strokeColor="#FF6B6B"
                 app:cornerRadius="8dp"
                 android:visibility="gone"
-                android:layout_marginStart="8dp" />
+                android:layout_marginStart="8dp"
+                android:stateListAnimator="@animator/item_scale" />
 
         </LinearLayout>
 

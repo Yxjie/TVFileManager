@@ -14,8 +14,8 @@ import com.tvnas.filebrowser.smb.ServerConfig
  */
 class ServerListAdapter(
     private val onItemClick: (ServerConfig) -> Unit,
-    private val onItemEditClick: (ServerConfig) -> Unit,
-    private val onItemDeleteClick: (ServerConfig) -> Unit
+    private val onItemLongClick: (ServerConfig) -> Unit,
+    private val onItemFocused: ((ServerConfig) -> Unit)? = null
 ) : ListAdapter<ServerConfig, ServerListAdapter.ViewHolder>(ServerDiffCallback()) {
     
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -39,15 +39,24 @@ class ServerListAdapter(
             binding.root.setOnClickListener {
                 onItemClick(server)
             }
-            
-            binding.btnEdit.setOnClickListener {
-                onItemEditClick(server)
+
+            binding.root.setOnLongClickListener {
+                onItemLongClick(server)
+                true
             }
-            
-            binding.btnDelete.setOnClickListener {
-                onItemDeleteClick(server)
+
+            binding.root.setOnFocusChangeListener { _, hasFocus ->
+                if (hasFocus && bindingAdapterPosition != RecyclerView.NO_POSITION) {
+                    getItemOrNull(bindingAdapterPosition)?.let { currentServer ->
+                        onItemFocused?.invoke(currentServer)
+                    }
+                }
             }
         }
+    }
+
+    private fun getItemOrNull(position: Int): ServerConfig? {
+        return if (position in 0 until itemCount) getItem(position) else null
     }
     
     class ServerDiffCallback : DiffUtil.ItemCallback<ServerConfig>() {

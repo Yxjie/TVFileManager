@@ -28,9 +28,11 @@
             android:layout_height="40dp"
             android:text="+ 添加服务器"
             android:textSize="14sp"
-            android:backgroundTint="#6495ED"
+            android:background="@drawable/btn_accent_bg"
             android:textColor="@android:color/white"
-            android:focusable="true" />
+            android:focusable="true"
+            android:paddingHorizontal="16dp"
+            android:stateListAnimator="@animator/item_scale" />
     </LinearLayout>
 
     <!-- Server List -->
@@ -67,7 +69,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="点击卡片连接  |  ✏️编辑  |  🗑️删除"
+            android:text="@string/server_footer_hint"
             android:textColor="#60FFFFFF"
             android:textSize="12sp" />
 
@@ -86,10 +88,11 @@
             android:layout_height="36dp"
             android:text="清除缓存"
             android:textSize="13sp"
-            android:backgroundTint="#FF5722"
+            android:background="@drawable/btn_danger_bg"
             android:textColor="@android:color/white"
             android:focusable="true"
-            android:paddingHorizontal="16dp" />
+            android:paddingHorizontal="16dp"
+            android:stateListAnimator="@animator/item_scale" />
     </LinearLayout>
 
 </LinearLayout>

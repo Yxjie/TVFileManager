@@ -1,5 +1,6 @@
 package com.tvnas.filebrowser.ui
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
@@ -89,6 +90,8 @@ class ImageViewerActivity : AppCompatActivity() {
                 binding.progressBar.visibility = View.VISIBLE
             }
             is ImageViewerViewModel.ImageUiState.Success -> {
+                binding.tvFileName.text = state.name
+                binding.tvIndex.text = getString(R.string.image_index, state.index + 1, state.total)
                 binding.progressBar.visibility = View.GONE
                 binding.imageView.setImageBitmap(state.bitmap)
             }
@@ -128,6 +131,14 @@ class ImageViewerActivity : AppCompatActivity() {
             }
             else -> super.onKeyDown(keyCode, event)
         }
+    }
+
+    override fun finish() {
+        val data = Intent().apply {
+            putExtra("currentIndex", viewModel.currentIndex.value)
+        }
+        setResult(RESULT_OK, data)
+        super.finish()
     }
 
     private fun showToast(message: String) {

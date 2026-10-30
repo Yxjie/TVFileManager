@@ -41,6 +41,8 @@
     <string name="detail_type">类型: %s</string>
     <string name="confirm">确定</string>
     <string name="cancel">取消</string>
+    <string name="delete_file_confirm">确定要删除文件 \"%s\" 吗？此操作无法撤销。</string>
+    <string name="delete_folder_confirm">确定要删除文件夹 \"%s\" 及其包含的所有内容吗？此操作无法撤销。</string>
     <string name="install_app_title">安装应用</string>
     <string name="install_app_message">是否下载并安装 %1$s?\n\n大小: %2$s</string>
     <string name="download_start_install">下载完成，开始安装</string>
@@ -105,4 +107,6 @@
     <string name="slideshow_started">轮播已开启</string>
     <string name="slideshow_stopped">轮播已关闭</string>
     <string name="slideshow_need_images">至少需要 2 张图片才能轮播</string>
+    <string name="hint_long_press_action">长按编辑/删除</string>
+    <string name="server_footer_hint">点击卡片连接  |  长按卡片编辑或删除</string>
 </resources>
